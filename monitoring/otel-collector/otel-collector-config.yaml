@@ -1,0 +1,35 @@
+# OTEL Collector — receives spans from the backend, forwards to Tempo.
+#
+# Pipeline: backend --(OTLP/HTTP)--> collector --(OTLP/gRPC)--> tempo
+#
+# The batch processor holds spans briefly before flushing so Tempo receives
+# them in efficient batches rather than one by one.
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133   # internal; not published outside the container
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318   # backend sends here
+
+processors:
+  batch:
+    timeout: 1s            # flush at least every second
+    send_batch_size: 1024  # or when 1024 spans have accumulated
+
+exporters:
+  otlp/tempo:
+    endpoint: tempo:4317   # Tempo's OTLP/gRPC receiver (internal network)
+    tls:
+      insecure: true       # no TLS inside the monitoring network
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp/tempo]

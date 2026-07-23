@@ -22,6 +22,8 @@ from typing import Any
 
 from ag_ui.core import EventType, StateDeltaEvent
 
+from ..telemetry import span
+
 # The only state keys the frontend may see. Everything else is private.
 PUBLIC_STATE_KEYS = {"payment_event", "ui_components"}
 
@@ -101,7 +103,12 @@ def wrap_run_with_transforms(agent: Any) -> None:
     """
     original_run = agent.run
 
+    @span("agent.turn")
     async def transformed_run(input_data: Any):
+        # agent.turn is the root span for every conversation turn. All tool
+        # spans (tools.*, checkout.*, delivery.*, orders.*, monnify.*) become
+        # its children because OTEL propagates context through async generators
+        # and awaits via Python contextvars.
         payment_event: dict[str, Any] | None = None
         ui_components: list[dict[str, Any]] = []
         pending_finish: Any | None = None

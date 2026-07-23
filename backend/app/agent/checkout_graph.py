@@ -47,7 +47,7 @@ from google.adk.workflow import START, JoinNode, RetryConfig, Workflow, node
 from ..money import money
 from ..shop import catalog, delivery
 from ..shop.orders import order_store
-from ..telemetry import traced
+from ..telemetry import set_span_attribute, span, traced
 from . import gen_ui
 from .flight_agent import create_flight_agent
 
@@ -81,6 +81,7 @@ def _as_request(node_input: Any) -> dict[str, Any]:
 
 
 @node(name="validate_product")
+@span("checkout.validate_product")
 def validate_product(ctx: Context, node_input: Any) -> dict[str, Any]:
     request = _as_request(node_input)
     product = catalog.get_product(str(request.get("product_id", "")))
@@ -108,9 +109,12 @@ def validate_product(ctx: Context, node_input: Any) -> dict[str, Any]:
         exceptions=[delivery.GeocodeUnavailableError],
     ),
 )
+@span("checkout.geocode_destination")
 async def geocode_destination(ctx: Context, node_input: Any):
     payload = dict(node_input)
     request = payload["request"]
+    set_span_attribute("city", request.get("destination_city", ""))
+    set_span_attribute("country", request.get("destination_country", ""))
     geo = await asyncio.to_thread(
         delivery.geocode_city,
         str(request["destination_city"]),
@@ -189,16 +193,17 @@ fare_resolver = _agent_fare_resolver
 
 
 @node(name="flight_fare_lookup", timeout=90.0)
+@span("checkout.flight_fare_lookup")
 async def flight_fare_lookup(ctx: Context, node_input: Any) -> dict[str, Any]:
     payload = dict(node_input)
+    set_span_attribute("city", payload["destination_city"])
     fare: dict[str, str] | None = None
-    with traced("checkout.flight_fare_lookup", city=payload["destination_city"]):
-        try:
-            fare = await fare_resolver(
-                ctx, payload["destination_city"], payload["destination_country"]
-            )
-        except Exception as exc:  # a fare miss must never kill checkout
-            log.warning("checkout.flight_fare_lookup.failed error=%s", exc)
+    try:
+        fare = await fare_resolver(
+            ctx, payload["destination_city"], payload["destination_country"]
+        )
+    except Exception as exc:  # a fare miss must never kill checkout
+        log.warning("checkout.flight_fare_lookup.failed error=%s", exc)
     return {"fare": fare}
 
 
@@ -209,6 +214,7 @@ fee_join = JoinNode(name="fee_join")
 
 
 @node(name="compute_fee")
+@span("checkout.compute_fee")
 def compute_fee(ctx: Context, node_input: Any) -> dict[str, Any]:
     """Merge point of both branches: derive the final fee, total, and ETA.
 
@@ -244,6 +250,7 @@ def compute_fee(ctx: Context, node_input: Any) -> dict[str, Any]:
 
 
 @node(name="create_order")
+@span("checkout.create_order")
 async def create_order_node(ctx: Context, node_input: Any) -> dict[str, Any]:
     """Persist the order in Postgres. Every number here was derived in-graph."""
     payload = dict(node_input)
@@ -279,6 +286,7 @@ async def create_order_node(ctx: Context, node_input: Any) -> dict[str, Any]:
 
 
 @node(name="payment_event")
+@span("checkout.payment_event")
 def payment_event_node(ctx: Context, node_input: Any) -> dict[str, Any]:
     """Terminal node: the tool-result payload the frontend contract expects."""
     payload = dict(node_input)
