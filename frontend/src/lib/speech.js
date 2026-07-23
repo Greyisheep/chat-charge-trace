@@ -109,6 +109,63 @@ export function stripMarkdown(text) {
     .trim();
 }
 
+/**
+ * Rank a voice for naturalness. The browser default is often the robotic
+ * fallback, so we actively prefer the modern natural voices when present:
+ * Chrome's Google voices, macOS enhanced/premium voices, and the Edge
+ * "Natural" online voices. Higher score wins.
+ */
+function scoreVoice(voice) {
+  const name = (voice.name || "").toLowerCase();
+  let score = 0;
+  if (name.includes("natural")) score += 60; // Edge "... (Natural)"
+  if (name.includes("google")) score += 50; // Chrome Google voices
+  if (name.includes("enhanced") || name.includes("premium")) score += 40; // macOS
+  // Known pleasant macOS/system English voices.
+  if (/\b(samantha|ava|allison|zoe|serena|aria|jenny|evan)\b/.test(name)) {
+    score += 25;
+  }
+  if (name.includes("siri")) score += 30;
+  // Nudge away from the classic robotic fallbacks.
+  if (/\b(albert|fred|zarvox|bad news|trinoids|junior|ralph)\b/.test(name)) {
+    score -= 50;
+  }
+  return score;
+}
+
+let cachedVoice = null;
+let cachedVoiceLang = null;
+
+/** Pick the most natural available voice for the language. */
+function getPreferredVoice(lang) {
+  if (!isSpeechSynthesisSupported) return null;
+  const voices = window.speechSynthesis.getVoices();
+  if (!voices || voices.length === 0) return null;
+  const wanted = (lang || "en-US").slice(0, 2).toLowerCase();
+  if (cachedVoice && cachedVoiceLang === wanted && voices.includes(cachedVoice)) {
+    return cachedVoice;
+  }
+  const matches = voices.filter((v) =>
+    (v.lang || "").slice(0, 2).toLowerCase() === wanted,
+  );
+  const pool = matches.length > 0 ? matches : voices;
+  const best = pool
+    .slice()
+    .sort((a, b) => scoreVoice(b) - scoreVoice(a))[0];
+  cachedVoice = best || null;
+  cachedVoiceLang = wanted;
+  return cachedVoice;
+}
+
+// Voices load asynchronously in some browsers; warm the list and reset the
+// cache when it arrives so the first spoken reply already uses a good voice.
+if (isSpeechSynthesisSupported) {
+  window.speechSynthesis.getVoices();
+  window.speechSynthesis.addEventListener?.("voiceschanged", () => {
+    cachedVoice = null;
+  });
+}
+
 /** Speak the given text once. No-op when unsupported or empty. */
 export function speak(text, options = {}) {
   if (!isSpeechSynthesisSupported) return;
@@ -117,8 +174,12 @@ export function speak(text, options = {}) {
   const synth = window.speechSynthesis;
   synth.cancel();
   const utterance = new SpeechSynthesisUtterance(clean);
-  utterance.lang = options.lang || "en-US";
-  utterance.rate = options.rate ?? 1;
+  const lang = options.lang || "en-US";
+  utterance.lang = lang;
+  const voice = getPreferredVoice(lang);
+  if (voice) utterance.voice = voice;
+  // A hair slower than default reads as calmer and less clipped.
+  utterance.rate = options.rate ?? 0.98;
   utterance.pitch = options.pitch ?? 1;
   synth.speak(utterance);
 }
