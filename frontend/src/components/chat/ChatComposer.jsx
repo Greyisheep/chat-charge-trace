@@ -6,6 +6,7 @@ import {
   createSpeechRecognizer,
   isSpeechRecognitionSupported,
 } from "../../lib/speech";
+import { suggestFor } from "../../lib/suggestions";
 
 function SendIcon({ size = 14 }) {
   return (
@@ -49,11 +50,41 @@ export default function ChatComposer({
   loading = false,
   inputRef,
   placeholder = "Ask about anything in the shop",
+  productNames = [],
+  contextHint = null,
 }) {
   const [focused, setFocused] = useState(false);
   const [listening, setListening] = useState(false);
+  // While dismissed, the ghost stays hidden until the input changes again.
+  const [dismissed, setDismissed] = useState(false);
   const recognizerRef = useRef(null);
+  const overlayRef = useRef(null);
   const canSend = Boolean(input?.trim());
+
+  // Deterministic, local suggestion. Suppressed while the mic is filling the
+  // textarea and while a suggestion has been explicitly dismissed. The result
+  // always starts with the exact input, so the ghost tail is a plain slice.
+  const suggestion =
+    !listening && !dismissed && input?.trim()
+      ? suggestFor(input, { products: productNames, hint: contextHint })
+      : null;
+  const ghostRemainder = suggestion ? suggestion.slice(input.length) : "";
+
+  const acceptSuggestion = () => {
+    if (!suggestion) return;
+    setInput(suggestion);
+    setDismissed(false);
+    // Resize and drop the caret at the end after React applies the new value.
+    window.requestAnimationFrame(() => {
+      const el = inputRef?.current;
+      if (!el) return;
+      el.style.height = "auto";
+      el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
+      const end = suggestion.length;
+      el.setSelectionRange(end, end);
+      el.focus();
+    });
+  };
 
   useEffect(() => {
     return () => {
@@ -96,6 +127,19 @@ export default function ChatComposer({
   };
 
   const handleKeyDown = (e) => {
+    // Tab accepts the active ghost without moving focus.
+    if (e.key === "Tab" && ghostRemainder) {
+      e.preventDefault();
+      acceptSuggestion();
+      return;
+    }
+    // Escape hides the current ghost until the input changes again.
+    if (e.key === "Escape" && ghostRemainder) {
+      e.preventDefault();
+      setDismissed(true);
+      return;
+    }
+    // Enter still sends and must never accept the ghost.
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       if (canSend && !loading) onSend();
@@ -133,22 +177,42 @@ export default function ChatComposer({
             <MicIcon />
           </button>
         ) : null}
-        <textarea
-          ref={inputRef}
-          placeholder={placeholder}
-          value={input}
-          onChange={(e) => {
-            setInput(e.target.value);
-            e.target.style.height = "auto";
-            e.target.style.height = `${Math.min(e.target.scrollHeight, 120)}px`;
-          }}
-          onKeyDown={handleKeyDown}
-          onFocus={() => setFocused(true)}
-          onBlur={() => setFocused(false)}
-          disabled={loading}
-          rows={1}
-          className="max-h-[120px] min-h-[24px] min-w-0 flex-1 resize-none self-center border-0 bg-transparent py-1 text-[14px] leading-6 text-ink-body placeholder-[#98A2B3] outline-none focus:ring-0 disabled:opacity-50"
-        />
+        <div className="relative min-w-0 flex-1 self-center">
+          {/* Ghost overlay: same box and text metrics as the textarea. The
+              typed portion is transparent so the real textarea text shows
+              through on top, and only the suggested tail renders in gray. */}
+          {ghostRemainder ? (
+            <div
+              ref={overlayRef}
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-0 max-h-[120px] overflow-hidden whitespace-pre-wrap break-words py-1 text-[14px] leading-6 text-transparent"
+            >
+              <span>{input}</span>
+              <span className="text-[#98A2B3]">{ghostRemainder}</span>
+            </div>
+          ) : null}
+          <textarea
+            ref={inputRef}
+            placeholder={placeholder}
+            value={input}
+            onChange={(e) => {
+              setInput(e.target.value);
+              setDismissed(false);
+              e.target.style.height = "auto";
+              e.target.style.height = `${Math.min(e.target.scrollHeight, 120)}px`;
+            }}
+            onScroll={(e) => {
+              if (overlayRef.current)
+                overlayRef.current.scrollTop = e.target.scrollTop;
+            }}
+            onKeyDown={handleKeyDown}
+            onFocus={() => setFocused(true)}
+            onBlur={() => setFocused(false)}
+            disabled={loading}
+            rows={1}
+            className="relative z-[1] max-h-[120px] min-h-[24px] w-full resize-none border-0 bg-transparent py-1 text-[14px] leading-6 text-ink-body placeholder-[#98A2B3] outline-none focus:ring-0 disabled:opacity-50"
+          />
+        </div>
         <button
           type="button"
           onClick={onSend}

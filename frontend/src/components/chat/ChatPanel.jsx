@@ -5,9 +5,11 @@ import React, {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useMemo,
   useRef,
   useState,
 } from "react";
+import { fetchProducts } from "../../lib/api";
 import { createAguiIds } from "../../lib/aguiStream";
 import { runAguiStreamTurn } from "../../lib/runAguiStreamTurn";
 import {
@@ -105,6 +107,9 @@ const ChatPanel = forwardRef(function ChatPanel(
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [guardPulse, setGuardPulse] = useState(false);
+  // Product names feed the composer's local ghost-text suggester. Reuses the
+  // same catalog source as the grid; no second hardcoded copy.
+  const [productNames, setProductNames] = useState([]);
   const [voiceOutput, setVoiceOutput] = useState(() => {
     try {
       return localStorage.getItem(VOICE_OUTPUT_KEY) === "1";
@@ -125,6 +130,40 @@ const ChatPanel = forwardRef(function ChatPanel(
   useEffect(() => {
     onLoadingChange?.(loading);
   }, [loading, onLoadingChange]);
+
+  // Pull product names once for the composer suggester.
+  useEffect(() => {
+    let cancelled = false;
+    fetchProducts()
+      .then((list) => {
+        if (cancelled) return;
+        setProductNames(list.map((p) => p?.name).filter(Boolean));
+      })
+      .catch(() => {
+        /* suggester simply falls back to intent phrases */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Coarse conversation hint from the most recent agent message: after a
+  // delivery quote, bias toward buying; after a verified order, bias toward a
+  // status check. Small and read-only, so it is cheap to thread down.
+  const contextHint = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const m = messages[i];
+      if (m.role !== "agent") continue;
+      const text = (m.text || "").toLowerCase();
+      if (!text) continue;
+      if (text.includes("payment verified") || text.includes("order status"))
+        return "verified";
+      if (/deliver|delivery|quote|shipping|fly|flight|naira|₦/.test(text))
+        return "quote";
+      return null;
+    }
+    return null;
+  }, [messages]);
 
   // Clear any pending pulse timer on unmount.
   useEffect(() => {
@@ -389,6 +428,8 @@ const ChatPanel = forwardRef(function ChatPanel(
           onVoiceSend={sendMessage}
           loading={loading}
           inputRef={inputRef}
+          productNames={productNames}
+          contextHint={contextHint}
         />
       </div>
     </div>
