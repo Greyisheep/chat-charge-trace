@@ -15,7 +15,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from google.adk.sessions import DatabaseSessionService
 
-from api import agents_router, shop_router, webhook_router
+from api import agents_router, live_router, shop_router, webhook_router
 from app.config import get_settings
 from app.shop.orders import order_store
 
@@ -46,6 +46,13 @@ async def lifespan(app: FastAPI):
         tags=["Agents AG-UI Stream"],
     )
 
+    # Additive native-voice door: the WebSocket at /v1/agents/live (registered
+    # at import time below) drives Runner.run_live over the SAME agent, tools,
+    # and shared session service. The SSE text path above is untouched. Just log
+    # the live model here so a wrong id is easy to spot; feature-flagged off by
+    # default on the frontend (VITE_VOICE_NATIVE), so the route is harmless.
+    live_router.log_live_config()
+
     try:
         yield
     finally:
@@ -75,3 +82,7 @@ def health() -> dict[str, str]:
 
 app.include_router(shop_router.router, tags=["Shop"])
 app.include_router(webhook_router.router, tags=["Webhooks"])
+# Native-voice WebSocket, mounted at import time so it is present even before
+# the lifespan runs; it resolves the shared session service per-connection from
+# app.state (set by the lifespan). Isolated from and additive to the SSE path.
+app.include_router(live_router.router, tags=["Agents Live Voice"])

@@ -52,6 +52,10 @@ export default function ChatComposer({
   placeholder = "Ask about anything in the shop",
   productNames = [],
   contextHint = null,
+  nativeVoice = false,
+  liveActive = false,
+  liveConnecting = false,
+  onToggleLive,
 }) {
   const [focused, setFocused] = useState(false);
   const [listening, setListening] = useState(false);
@@ -60,6 +64,11 @@ export default function ChatComposer({
   const recognizerRef = useRef(null);
   const overlayRef = useRef(null);
   const canSend = Boolean(input?.trim());
+
+  // In native mode the mic uses getUserMedia (via the live session), so the
+  // button shows even when the Web Speech recognizer is missing. In floor mode
+  // it stays gated on recognizer support exactly as before.
+  const showMic = nativeVoice || isSpeechRecognitionSupported;
 
   // Deterministic, local suggestion. Suppressed while the mic is filling the
   // textarea and while a suggestion has been explicitly dismissed. The result
@@ -155,27 +164,69 @@ export default function ChatComposer({
             : "border-line-strong hover:border-[#98A2B3]"
         }`}
       >
-        {isSpeechRecognitionSupported ? (
-          <button
-            type="button"
-            onClick={toggleListening}
-            disabled={loading}
-            aria-label={listening ? "Stop voice input" : "Start voice input"}
-            title={listening ? "Stop voice input" : "Start voice input"}
-            className={`relative flex h-9 w-9 min-h-[36px] min-w-[36px] flex-shrink-0 items-center justify-center rounded-full transition-all active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 ${
-              listening
-                ? "bg-red-50 text-red-500"
-                : "text-ink-muted hover:bg-surface-alt disabled:cursor-not-allowed disabled:opacity-50"
-            }`}
-          >
-            {listening ? (
-              <span
-                className="absolute inset-0 animate-pulse rounded-full ring-2 ring-red-400"
-                aria-hidden
-              />
-            ) : null}
-            <MicIcon />
-          </button>
+        {showMic ? (
+          nativeVoice ? (
+            <button
+              type="button"
+              onClick={onToggleLive}
+              disabled={liveConnecting}
+              aria-label={liveActive ? "Stop live voice" : "Start live voice"}
+              aria-pressed={liveActive}
+              title={
+                liveConnecting
+                  ? "Connecting live voice"
+                  : liveActive
+                    ? "Stop live voice"
+                    : "Start live voice"
+              }
+              className={`relative flex h-9 w-9 min-h-[36px] min-w-[36px] flex-shrink-0 items-center justify-center rounded-full transition-all active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 ${
+                liveActive
+                  ? "bg-emerald-50 text-emerald-600"
+                  : "text-ink-muted hover:bg-surface-alt disabled:cursor-not-allowed disabled:opacity-50"
+              }`}
+            >
+              {liveActive ? (
+                <>
+                  <span
+                    className="absolute inset-0 animate-ping rounded-full bg-emerald-400/30"
+                    aria-hidden
+                  />
+                  <span
+                    className="absolute inset-0 rounded-full ring-2 ring-emerald-500"
+                    aria-hidden
+                  />
+                </>
+              ) : null}
+              {liveConnecting ? (
+                <span
+                  className="absolute inset-0 animate-pulse rounded-full ring-2 ring-emerald-300"
+                  aria-hidden
+                />
+              ) : null}
+              <MicIcon />
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={toggleListening}
+              disabled={loading}
+              aria-label={listening ? "Stop voice input" : "Start voice input"}
+              title={listening ? "Stop voice input" : "Start voice input"}
+              className={`relative flex h-9 w-9 min-h-[36px] min-w-[36px] flex-shrink-0 items-center justify-center rounded-full transition-all active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 ${
+                listening
+                  ? "bg-red-50 text-red-500"
+                  : "text-ink-muted hover:bg-surface-alt disabled:cursor-not-allowed disabled:opacity-50"
+              }`}
+            >
+              {listening ? (
+                <span
+                  className="absolute inset-0 animate-pulse rounded-full ring-2 ring-red-400"
+                  aria-hidden
+                />
+              ) : null}
+              <MicIcon />
+            </button>
+          )
         ) : null}
         <div className="relative min-w-0 flex-1 self-center">
           {/* Ghost overlay: same box and text metrics as the textarea. The

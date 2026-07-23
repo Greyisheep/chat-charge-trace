@@ -71,6 +71,28 @@ def _parse_tool_content(content: Any) -> dict[str, Any] | None:
     return None
 
 
+def lift_public_payload(
+    result: Any,
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    """Pull the two public keys out of one tool-result dict.
+
+    A create_order result carries `payment_event` (the frontend opens the
+    Monnify checkout popup from it), and list_products / get_product / checkout
+    results carry `ui_components` (generative UI product cards). This is the
+    single source of truth for that scan, shared by the SSE transform below and
+    the native-voice live router, so both channels lift the same shapes.
+
+    Returns (payment_event_or_None, ui_components_list).
+    """
+    parsed = _parse_tool_content(result)
+    if parsed is None:
+        return None, []
+    payment_event = parsed["payment_event"] if parsed.get("payment_event") else None
+    ui = parsed.get("ui_components")
+    ui_components = ui if isinstance(ui, list) else []
+    return payment_event, ui_components
+
+
 def wrap_run_with_transforms(agent: Any) -> None:
     """Wrap an ADKAgent instance's `run` with the AG-UI transforms.
 
@@ -86,12 +108,11 @@ def wrap_run_with_transforms(agent: Any) -> None:
 
         async for event in original_run(input_data):
             if getattr(event, "type", None) == EventType.TOOL_CALL_RESULT:
-                parsed = _parse_tool_content(event.content)
-                if parsed is not None:
-                    if parsed.get("payment_event"):
-                        payment_event = parsed["payment_event"]
-                    if isinstance(parsed.get("ui_components"), list):
-                        ui_components.extend(parsed["ui_components"])
+                event_payment, event_ui = lift_public_payload(event.content)
+                if event_payment is not None:
+                    payment_event = event_payment
+                if event_ui:
+                    ui_components.extend(event_ui)
 
             filtered = public_state_filter(event)
             if filtered is None:

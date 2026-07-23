@@ -17,6 +17,10 @@ import {
   isSpeechSynthesisSupported,
   speak,
 } from "../../lib/speech";
+import { LiveVoiceSession, isNativeVoiceEnabled } from "../../lib/liveVoice";
+import { normalizeAguiComponents } from "../../lib/normalizeComponents";
+import { openPaymentFromStreamEvent } from "../../lib/openPaymentFromStream";
+import { paymentEventFromSnapshot } from "../../lib/parseStateDelta";
 import ChatComposer from "./ChatComposer";
 import ChatEmptyState from "./ChatEmptyState";
 import MessageBubble from "./MessageBubble";
@@ -118,6 +122,13 @@ const ChatPanel = forwardRef(function ChatPanel(
     }
   });
 
+  // Native live-voice session state (issue #6). Only meaningful when the
+  // VITE_VOICE_NATIVE flag is on; otherwise the mic stays the browser floor.
+  const [liveActive, setLiveActive] = useState(false);
+  const [liveConnecting, setLiveConnecting] = useState(false);
+  const [liveFailed, setLiveFailed] = useState(false);
+  const [liveNotice, setLiveNotice] = useState(null);
+
   const threadIdRef = useRef(createAguiIds().threadId);
   const inputRef = useRef(null);
   const scrollRef = useRef(null);
@@ -125,6 +136,12 @@ const ChatPanel = forwardRef(function ChatPanel(
   const lastSentRef = useRef(null);
   const pulseTimerRef = useRef(null);
   const voiceOutputRef = useRef(voiceOutput);
+
+  const liveSessionRef = useRef(null);
+  const liveActiveRef = useRef(false);
+  // Accumulators for the two live transcript bubbles in flight.
+  const liveUserRef = useRef({ id: null, text: "" });
+  const liveAgentRef = useRef({ id: null, text: "" });
 
   // Let the host (App) mirror streaming state, e.g. to dim the product grid.
   useEffect(() => {
@@ -235,6 +252,198 @@ const ChatPanel = forwardRef(function ChatPanel(
         streamTools: [],
       },
     ]);
+  }, []);
+
+  // Append a message and return its generated id, so live callbacks can patch
+  // the same bubble as more transcript / ui frames arrive.
+  const appendMessage = useCallback((message) => {
+    const id =
+      message.id ?? nextLocalId(message.role === "user" ? "user" : "agent");
+    setMessages((prev) => [...prev, { ...message, id }]);
+    return id;
+  }, []);
+
+  // --- Native live voice (issue #6) -------------------------------------
+  // These map the live socket frames onto the exact chat / card / payment
+  // paths the text channel already uses, so a spoken turn looks identical.
+
+  const finalizeLiveAgent = useCallback(() => {
+    if (liveAgentRef.current.id) {
+      patchMessage(liveAgentRef.current.id, {
+        isStreaming: false,
+        streamStatus: null,
+      });
+      liveAgentRef.current = { id: null, text: "" };
+    }
+  }, [patchMessage]);
+
+  const handleLiveTranscript = useCallback(
+    ({ role, text, final }) => {
+      if (!text && !final) return;
+      if (role === "user") {
+        // A new user utterance finalizes any assistant bubble still streaming
+        // (the manager already flushed the assistant audio for barge-in).
+        if (!liveUserRef.current.id) {
+          finalizeLiveAgent();
+          const id = appendMessage({
+            role: "user",
+            text: text ?? "",
+            timestamp: new Date(),
+          });
+          liveUserRef.current = { id, text: text ?? "" };
+        } else {
+          liveUserRef.current.text += text ?? "";
+          patchMessage(liveUserRef.current.id, {
+            text: liveUserRef.current.text,
+          });
+        }
+        if (final) liveUserRef.current = { id: null, text: "" };
+        return;
+      }
+      // assistant
+      if (!liveAgentRef.current.id) {
+        const id = appendMessage({
+          role: "agent",
+          text: text ?? "",
+          timestamp: new Date(),
+          isStreaming: true,
+          streamStatus: "writing",
+          streamTools: [],
+          uiComponents: [],
+        });
+        liveAgentRef.current = { id, text: text ?? "" };
+      } else {
+        liveAgentRef.current.text += text ?? "";
+        patchMessage(liveAgentRef.current.id, {
+          text: liveAgentRef.current.text,
+        });
+      }
+    },
+    [appendMessage, patchMessage, finalizeLiveAgent],
+  );
+
+  const handleLiveUi = useCallback(
+    (components) => {
+      const normalized = normalizeAguiComponents(components);
+      if (normalized.length === 0) return;
+      if (!liveAgentRef.current.id) {
+        const id = appendMessage({
+          role: "agent",
+          text: "",
+          timestamp: new Date(),
+          isStreaming: true,
+          streamStatus: "writing",
+          streamTools: [],
+          uiComponents: normalized,
+        });
+        liveAgentRef.current = { id, text: "" };
+      } else {
+        patchMessage(liveAgentRef.current.id, { uiComponents: normalized });
+      }
+    },
+    [appendMessage, patchMessage],
+  );
+
+  const handleLivePaymentEvent = useCallback((paymentEvent) => {
+    // Reuse the same normalize + open path the text stream uses, so the
+    // Monnify modal opens identically whether the order came by voice or type.
+    const normalized = paymentEventFromSnapshot({ payment_event: paymentEvent });
+    if (normalized) openPaymentFromStreamEvent(normalized);
+  }, []);
+
+  const handleLiveTurnComplete = useCallback(() => {
+    finalizeLiveAgent();
+  }, [finalizeLiveAgent]);
+
+  const revertToFloor = useCallback(
+    (notice) => {
+      liveActiveRef.current = false;
+      setLiveActive(false);
+      setLiveConnecting(false);
+      setLiveFailed(true);
+      finalizeLiveAgent();
+      liveUserRef.current = { id: null, text: "" };
+      if (liveSessionRef.current) {
+        try {
+          liveSessionRef.current.close();
+        } catch {
+          /* no-op */
+        }
+        liveSessionRef.current = null;
+      }
+      setLiveNotice(notice || "Live voice unavailable, using basic voice.");
+    },
+    [finalizeLiveAgent],
+  );
+
+  const stopLive = useCallback(() => {
+    liveActiveRef.current = false;
+    setLiveActive(false);
+    setLiveConnecting(false);
+    finalizeLiveAgent();
+    liveUserRef.current = { id: null, text: "" };
+    if (liveSessionRef.current) {
+      try {
+        liveSessionRef.current.close();
+      } catch {
+        /* no-op */
+      }
+      liveSessionRef.current = null;
+    }
+  }, [finalizeLiveAgent]);
+
+  const startLive = useCallback(async () => {
+    if (liveActiveRef.current || liveConnecting) return;
+    setLiveNotice(null);
+    setLiveConnecting(true);
+    cancelSpeech(); // never let the floor TTS and the live audio overlap
+    const session = new LiveVoiceSession();
+    liveSessionRef.current = session;
+    try {
+      await session.connect(threadIdRef.current, {
+        onTranscript: handleLiveTranscript,
+        onPaymentEvent: handleLivePaymentEvent,
+        onUi: handleLiveUi,
+        onTurnComplete: handleLiveTurnComplete,
+        onError: () =>
+          revertToFloor("Live voice unavailable, using basic voice."),
+        onClose: () =>
+          revertToFloor("Live voice unavailable, using basic voice."),
+      });
+      liveActiveRef.current = true;
+      setLiveActive(true);
+      setLiveConnecting(false);
+    } catch {
+      liveSessionRef.current = null;
+      setLiveConnecting(false);
+      revertToFloor("Live voice unavailable, using basic voice.");
+    }
+  }, [
+    liveConnecting,
+    handleLiveTranscript,
+    handleLivePaymentEvent,
+    handleLiveUi,
+    handleLiveTurnComplete,
+    revertToFloor,
+  ]);
+
+  const toggleLive = useCallback(() => {
+    if (liveActiveRef.current) stopLive();
+    else startLive();
+  }, [startLive, stopLive]);
+
+  // Tear the live session down if the panel unmounts.
+  useEffect(() => {
+    return () => {
+      if (liveSessionRef.current) {
+        try {
+          liveSessionRef.current.close();
+        } catch {
+          /* no-op */
+        }
+        liveSessionRef.current = null;
+      }
+    };
   }, []);
 
   useEffect(() => {
@@ -421,6 +630,22 @@ const ChatPanel = forwardRef(function ChatPanel(
       </div>
 
       <div className="border-t border-line bg-surface px-4 pb-3 pt-3">
+        {liveNotice ? (
+          <div
+            role="status"
+            className="mb-2 flex items-center justify-between gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs text-amber-800"
+          >
+            <span className="min-w-0">{liveNotice}</span>
+            <button
+              type="button"
+              onClick={() => setLiveNotice(null)}
+              aria-label="Dismiss notice"
+              className="flex-shrink-0 rounded px-1 font-medium text-amber-700 hover:text-amber-900"
+            >
+              Dismiss
+            </button>
+          </div>
+        ) : null}
         <ChatComposer
           input={input}
           setInput={setInput}
@@ -430,6 +655,10 @@ const ChatPanel = forwardRef(function ChatPanel(
           inputRef={inputRef}
           productNames={productNames}
           contextHint={contextHint}
+          nativeVoice={isNativeVoiceEnabled && !liveFailed}
+          liveActive={liveActive}
+          liveConnecting={liveConnecting}
+          onToggleLive={toggleLive}
         />
       </div>
     </div>

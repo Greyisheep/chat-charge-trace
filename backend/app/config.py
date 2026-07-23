@@ -45,6 +45,12 @@ class Settings(BaseSettings):
 
     google_api_key: str = ""
     google_model_name: str = "gemini-flash-latest"
+    # Native voice path (Gemini Live API, real-time audio-to-audio). This is a
+    # SEPARATE model from google_model_name above and MUST be a Gemini-API
+    # live/native-audio model (the GOOGLE_API_KEY is an AI Studio key, not
+    # Vertex). Fully env-configurable so the id can be swapped without a code
+    # change; the live router logs it at startup.
+    gemini_live_model: str = "gemini-3.1-flash-live-preview"
 
     database_url: str = "postgresql+asyncpg://oja:oja@localhost:5433/oja"
 

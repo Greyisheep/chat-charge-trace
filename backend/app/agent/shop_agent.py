@@ -26,9 +26,16 @@ from .flight_agent import create_flight_agent
 from .instructions import SHOP_STATIC_INSTRUCTION, shop_dynamic_instruction
 
 
-def create_shop_agent() -> LlmAgent:
+def create_shop_agent(model: str | None = None) -> LlmAgent:
+    """Build the shop agent.
+
+    The optional `model` override lets the native-voice live path (run_live)
+    reuse this exact same agent, tools, and instructions while pointing at a
+    Gemini Live audio model instead of the text model. The SSE path calls this
+    with no argument and keeps google_model_name unchanged.
+    """
     return LlmAgent(
-        model=get_settings().google_model_name,
+        model=model or get_settings().google_model_name,
         name="OjaConnectShopAgent",
         description=(
             "Conversational shop assistant for Oja Connect: browse products, "
