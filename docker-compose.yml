@@ -16,5 +16,47 @@ services:
       timeout: 3s
       retries: 10
 
+  backend:
+    build: ./backend
+    container_name: oja-backend
+    # The repo-root .env supplies Monnify and Gemini credentials to the
+    # container at runtime; nothing is baked into the image.
+    env_file: .env
+    environment:
+      # Inside the compose network the database lives at the service
+      # hostname, not localhost. This overrides the .env value, which points
+      # at the published port 5433 for the local (non-docker) dev path.
+      DATABASE_URL: postgresql+asyncpg://oja:oja@postgres:5432/oja
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      # The slim image has no curl; stdlib urllib does the job.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/products')"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  frontend:
+    build:
+      context: ./frontend
+      # Vite inlines these into the JS bundle at BUILD time, so they travel
+      # as build args (values interpolated from the repo-root .env). Leave
+      # VITE_API_BASE_URL empty to have the browser use same-origin URLs
+      # that nginx proxies to the backend container.
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-}
+        VITE_MONNIFY_API_KEY: ${VITE_MONNIFY_API_KEY:-}
+        VITE_MONNIFY_CONTRACT_CODE: ${VITE_MONNIFY_CONTRACT_CODE:-}
+    container_name: oja-frontend
+    ports:
+      - "5173:5173"
+    depends_on:
+      backend:
+        condition: service_healthy
+
 volumes:
   oja_pgdata:
