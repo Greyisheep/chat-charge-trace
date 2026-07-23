@@ -48,6 +48,34 @@ function SpeakerOnIcon({ size = 18 }) {
   );
 }
 
+function ExpandIcon({ size = 18 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path
+        d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function CollapseIcon({ size = 18 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path
+        d="M4 9h5V4M20 9h-5V4M4 15h5v5M20 15h-5v5"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 function SpeakerOffIcon({ size = 18 }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden>
@@ -70,7 +98,7 @@ function SpeakerOffIcon({ size = 18 }) {
 }
 
 const ChatPanel = forwardRef(function ChatPanel(
-  { className = "", onLoadingChange },
+  { className = "", onLoadingChange, expanded = false, onToggleExpanded },
   ref,
 ) {
   const [messages, setMessages] = useState([]);
@@ -301,24 +329,38 @@ const ChatPanel = forwardRef(function ChatPanel(
             Browse, ask, and buy in one conversation
           </p>
         </div>
-        {isSpeechSynthesisSupported ? (
-          <button
-            type="button"
-            onClick={toggleVoiceOutput}
-            aria-label="Turn voice replies on/off"
-            aria-pressed={voiceOutput}
-            title={
-              voiceOutput ? "Voice replies on" : "Voice replies off"
-            }
-            className={`flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full border transition-all active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 ${
-              voiceOutput
-                ? "border-brand bg-brand text-white hover:bg-brand-hover"
-                : "border-line text-ink-muted hover:bg-surface-alt"
-            }`}
-          >
-            {voiceOutput ? <SpeakerOnIcon /> : <SpeakerOffIcon />}
-          </button>
-        ) : null}
+        <div className="flex flex-shrink-0 items-center gap-2">
+          {/* Desktop-only width toggle. Hidden on mobile, where the panel is a
+              full-screen bottom sheet and width does not apply. */}
+          {onToggleExpanded ? (
+            <button
+              type="button"
+              onClick={onToggleExpanded}
+              aria-label={expanded ? "Collapse chat" : "Expand chat"}
+              aria-pressed={expanded}
+              title={expanded ? "Collapse chat" : "Expand chat"}
+              className="hidden h-9 w-9 flex-shrink-0 items-center justify-center rounded-full border border-line text-ink-muted transition-all hover:bg-surface-alt active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 lg:flex"
+            >
+              {expanded ? <CollapseIcon /> : <ExpandIcon />}
+            </button>
+          ) : null}
+          {isSpeechSynthesisSupported ? (
+            <button
+              type="button"
+              onClick={toggleVoiceOutput}
+              aria-label="Turn voice replies on/off"
+              aria-pressed={voiceOutput}
+              title={voiceOutput ? "Voice replies on" : "Voice replies off"}
+              className={`flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full border transition-all active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 ${
+                voiceOutput
+                  ? "border-brand bg-brand text-white hover:bg-brand-hover"
+                  : "border-line text-ink-muted hover:bg-surface-alt"
+              }`}
+            >
+              {voiceOutput ? <SpeakerOnIcon /> : <SpeakerOffIcon />}
+            </button>
+          ) : null}
+        </div>
       </div>
 
       <div

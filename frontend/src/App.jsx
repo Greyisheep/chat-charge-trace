@@ -34,10 +34,33 @@ function CloseIcon() {
   );
 }
 
+const CHAT_EXPANDED_KEY = "oja-chat-expanded";
+
 export default function App() {
   const chatRef = useRef(null);
   const [mobileChatOpen, setMobileChatOpen] = useState(false);
   const [chatBusy, setChatBusy] = useState(false);
+  // Desktop-only: normal (~420px) vs expanded (~60vw). Persisted so demos
+  // and screenshots keep the chosen width across reloads.
+  const [chatExpanded, setChatExpanded] = useState(() => {
+    try {
+      return localStorage.getItem(CHAT_EXPANDED_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+
+  const toggleChatExpanded = useCallback(() => {
+    setChatExpanded((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem(CHAT_EXPANDED_KEY, next ? "1" : "0");
+      } catch {
+        /* ignore storage failures */
+      }
+      return next;
+    });
+  }, []);
 
   // A card click asks the agent right away through the one send path.
   // The panel's single-flight guard decides whether it actually goes out.
@@ -67,12 +90,17 @@ export default function App() {
 
         {/* Single chat panel: right column on desktop, full-screen sheet on mobile */}
         <aside
-          className={`fixed inset-0 z-40 bg-white transition-transform duration-300 lg:static lg:z-auto lg:block lg:w-[420px] lg:flex-shrink-0 lg:transform-none lg:border-l lg:border-line lg:transition-none ${
-            mobileChatOpen ? "translate-y-0" : "translate-y-full"
-          }`}
+          className={`fixed inset-0 z-40 bg-white transition-transform duration-300 lg:static lg:z-auto lg:block lg:flex-shrink-0 lg:transform-none lg:border-l lg:border-line lg:transition-all lg:duration-300 ${
+            chatExpanded ? "lg:w-[60vw]" : "lg:w-[420px]"
+          } ${mobileChatOpen ? "translate-y-0" : "translate-y-full"}`}
         >
           <div className="relative h-full">
-            <ChatPanel ref={chatRef} onLoadingChange={setChatBusy} />
+            <ChatPanel
+              ref={chatRef}
+              onLoadingChange={setChatBusy}
+              expanded={chatExpanded}
+              onToggleExpanded={toggleChatExpanded}
+            />
             <button
               type="button"
               onClick={() => setMobileChatOpen(false)}
