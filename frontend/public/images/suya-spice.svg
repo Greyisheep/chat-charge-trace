@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="400" height="300" viewBox="0 0 400 300">
+  <rect width="400" height="300" fill="#FBE3E3"/>
+  <rect x="12" y="12" width="376" height="276" fill="none" stroke="#D0D5DD" stroke-width="2" rx="8"/>
+  <text x="200" y="152" font-family="Inter, sans-serif" font-size="20" font-weight="600" fill="#344054" text-anchor="middle">Suya Spice Box</text>
+  <text x="200" y="178" font-family="Inter, sans-serif" font-size="12" fill="#667085" text-anchor="middle">Oja Connect</text>
+</svg>

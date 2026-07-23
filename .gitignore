@@ -1,0 +1,22 @@
+# env and secrets
+.env
+.env.local
+.env.*.local
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# node
+node_modules/
+dist/
+.vite/
+
+# misc
+.DS_Store
+
+# local tooling
+.claude/
