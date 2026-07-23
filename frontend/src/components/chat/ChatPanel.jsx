@@ -280,6 +280,10 @@ const ChatPanel = forwardRef(function ChatPanel(
   const handleLiveTranscript = useCallback(
     ({ role, text, final }) => {
       if (!text && !final) return;
+      // Transcription streams as deltas, then a closing frame (final: true)
+      // that repeats the COMPLETE utterance. Appending that final frame would
+      // print everything twice, so a final frame replaces the accumulated
+      // text rather than extending it.
       if (role === "user") {
         // A new user utterance finalizes any assistant bubble still streaming
         // (the manager already flushed the assistant audio for barge-in).
@@ -292,7 +296,9 @@ const ChatPanel = forwardRef(function ChatPanel(
           });
           liveUserRef.current = { id, text: text ?? "" };
         } else {
-          liveUserRef.current.text += text ?? "";
+          liveUserRef.current.text = final
+            ? text || liveUserRef.current.text
+            : liveUserRef.current.text + (text ?? "");
           patchMessage(liveUserRef.current.id, {
             text: liveUserRef.current.text,
           });
@@ -313,7 +319,9 @@ const ChatPanel = forwardRef(function ChatPanel(
         });
         liveAgentRef.current = { id, text: text ?? "" };
       } else {
-        liveAgentRef.current.text += text ?? "";
+        liveAgentRef.current.text = final
+          ? text || liveAgentRef.current.text
+          : liveAgentRef.current.text + (text ?? "");
         patchMessage(liveAgentRef.current.id, {
           text: liveAgentRef.current.text,
         });

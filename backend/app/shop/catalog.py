@@ -75,3 +75,35 @@ def get_product(product_id: str) -> Product | None:
         if product["id"] == product_id:
             return product
     return None
+
+
+def _norm(value: str) -> str:
+    """Lowercase and strip everything but letters and digits, for loose matching."""
+    return "".join(ch for ch in value.lower() if ch.isalnum())
+
+
+def resolve_product(identifier: str) -> Product | None:
+    """Resolve a product by id or name, tolerant of near-misses.
+
+    A conversational agent (especially over voice) may pass a slightly-off id
+    like "suya-spice-box" or the display name "Suya Spice Box" instead of the
+    exact catalog id "suya-spice". Try an exact id first, then a normalized
+    match against both id and name, then a containment match so a spoken name
+    still resolves. Returns None only when nothing plausibly matches.
+    """
+    if not identifier:
+        return None
+    exact = get_product(identifier)
+    if exact is not None:
+        return exact
+    target = _norm(identifier)
+    if not target:
+        return None
+    for product in PRODUCTS:
+        if _norm(product["id"]) == target or _norm(product["name"]) == target:
+            return product
+    for product in PRODUCTS:
+        pid, pname = _norm(product["id"]), _norm(product["name"])
+        if target in pid or pid in target or target in pname or pname in target:
+            return product
+    return None

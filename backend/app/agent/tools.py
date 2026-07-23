@@ -33,7 +33,7 @@ from ..shop import catalog, delivery
 from ..shop.orders import order_store
 from ..telemetry import traced
 from . import gen_ui
-from .checkout_graph import CheckoutError, checkout_workflow
+from .checkout_graph import CheckoutError, checkout_workflow, run_checkout_direct
 
 log = logging.getLogger("tools")
 
@@ -240,17 +240,30 @@ async def checkout(
                 use_sub_branch=False,
             )
         except CheckoutError as exc:
+            # A real validation failure (bad product, missing detail, geocode
+            # miss). Relay it; retrying the graph would fail the same way.
             return {"success": False, "error": str(exc)}
         except Exception as exc:
-            log.warning("tools.checkout.failed error=%s", exc)
-            message = str(exc)
-            if "CheckoutError" in type(exc).__name__ or "could not find" in message.lower():
-                return {"success": False, "error": message}
-            return {
-                "success": False,
-                "error": "Checkout hit a snag on our side. Nothing was charged; "
-                "please try again in a moment.",
-            }
+            # The graph engine could not run in this context. This is expected
+            # under run_live (the voice door), whose invocation context has no
+            # node event queue, so tool_context.run_node raises. Fall back to
+            # the direct executor, which runs the identical steps. The graph
+            # fails before create_order, so there is no partial order to worry
+            # about. This also covers any future graph-runtime breakage.
+            log.warning(
+                "tools.checkout.graph_unavailable error=%s; using direct path", exc
+            )
+            try:
+                result = await run_checkout_direct(node_input)
+            except CheckoutError as exc2:
+                return {"success": False, "error": str(exc2)}
+            except Exception as exc2:
+                log.warning("tools.checkout.direct_failed error=%s", exc2)
+                return {
+                    "success": False,
+                    "error": "Checkout hit a snag on our side. Nothing was "
+                    "charged; please try again in a moment.",
+                }
         if not isinstance(result, dict):
             return {"success": False, "error": "Checkout returned no result. Please try again."}
 
