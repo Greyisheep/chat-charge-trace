@@ -118,7 +118,7 @@ export default function ChatComposer({
             disabled={loading}
             aria-label={listening ? "Stop voice input" : "Start voice input"}
             title={listening ? "Stop voice input" : "Start voice input"}
-            className={`relative flex h-9 w-9 min-h-[36px] min-w-[36px] flex-shrink-0 items-center justify-center rounded-full transition-all active:scale-[0.97] ${
+            className={`relative flex h-9 w-9 min-h-[36px] min-w-[36px] flex-shrink-0 items-center justify-center rounded-full transition-all active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 ${
               listening
                 ? "bg-red-50 text-red-500"
                 : "text-ink-muted hover:bg-surface-alt disabled:cursor-not-allowed disabled:opacity-50"
@@ -153,7 +153,7 @@ export default function ChatComposer({
           type="button"
           onClick={onSend}
           disabled={loading || !canSend}
-          className={`flex h-9 w-9 min-h-[36px] min-w-[36px] flex-shrink-0 items-center justify-center rounded-full transition-all active:scale-[0.97] ${
+          className={`flex h-9 w-9 min-h-[36px] min-w-[36px] flex-shrink-0 items-center justify-center rounded-full transition-all active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 ${
             loading || !canSend
               ? "cursor-not-allowed bg-[#B8D4F8] text-white"
               : "cursor-pointer bg-brand text-white hover:bg-brand-hover"

@@ -69,10 +69,14 @@ function SpeakerOffIcon({ size = 18 }) {
   );
 }
 
-const ChatPanel = forwardRef(function ChatPanel({ className = "" }, ref) {
+const ChatPanel = forwardRef(function ChatPanel(
+  { className = "", onLoadingChange },
+  ref,
+) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [guardPulse, setGuardPulse] = useState(false);
   const [voiceOutput, setVoiceOutput] = useState(() => {
     try {
       return localStorage.getItem(VOICE_OUTPUT_KEY) === "1";
@@ -85,11 +89,37 @@ const ChatPanel = forwardRef(function ChatPanel({ className = "" }, ref) {
   const inputRef = useRef(null);
   const scrollRef = useRef(null);
   const loadingRef = useRef(false);
+  const lastSentRef = useRef(null);
+  const pulseTimerRef = useRef(null);
   const voiceOutputRef = useRef(voiceOutput);
 
+  // Let the host (App) mirror streaming state, e.g. to dim the product grid.
   useEffect(() => {
-    loadingRef.current = loading;
-  }, [loading]);
+    onLoadingChange?.(loading);
+  }, [loading, onLoadingChange]);
+
+  // Clear any pending pulse timer on unmount.
+  useEffect(() => {
+    return () => {
+      if (pulseTimerRef.current) window.clearTimeout(pulseTimerRef.current);
+    };
+  }, []);
+
+  /**
+   * Brief border pulse on the panel: shown when a send is ignored by the
+   * single-flight guard so the user sees why nothing happened.
+   */
+  const triggerGuardPulse = useCallback(() => {
+    setGuardPulse(false);
+    window.requestAnimationFrame(() => {
+      setGuardPulse(true);
+      if (pulseTimerRef.current) window.clearTimeout(pulseTimerRef.current);
+      pulseTimerRef.current = window.setTimeout(
+        () => setGuardPulse(false),
+        650,
+      );
+    });
+  }, []);
 
   useEffect(() => {
     voiceOutputRef.current = voiceOutput;
@@ -156,7 +186,22 @@ const ChatPanel = forwardRef(function ChatPanel({ className = "" }, ref) {
   const sendMessage = useCallback(
     async (rawText) => {
       const text = (rawText ?? "").trim();
-      if (!text || loadingRef.current) return;
+      if (!text) return;
+
+      // Single-flight guard: exactly one agent turn in flight. Every send
+      // (composer, cards, chips, voice) funnels through here, so gating here
+      // covers them all. While a turn streams, further sends are ignored:
+      // no queueing, no aborting. An identical repeat of the in-flight ask
+      // is a deduped silent no-op; any other ignored send pulses the panel
+      // border so the user sees why nothing happened.
+      if (loadingRef.current) {
+        if (text !== lastSentRef.current) triggerGuardPulse();
+        return;
+      }
+      // Set synchronously (not via effect) so a rapid double click cannot
+      // race past the guard before React re-renders.
+      loadingRef.current = true;
+      lastSentRef.current = text;
 
       // A new turn starts: silence any reply still being spoken.
       cancelSpeech();
@@ -209,10 +254,12 @@ const ChatPanel = forwardRef(function ChatPanel({ className = "" }, ref) {
               : "I could not reach the shop right now. Make sure the backend is running, then try again.",
         });
       } finally {
+        loadingRef.current = false;
+        lastSentRef.current = null;
         setLoading(false);
       }
     },
-    [patchMessage],
+    [patchMessage, triggerGuardPulse],
   );
 
   const insertPrompt = useCallback((text) => {
@@ -242,7 +289,11 @@ const ChatPanel = forwardRef(function ChatPanel({ className = "" }, ref) {
   );
 
   return (
-    <div className={`flex h-full min-h-0 flex-col bg-surface ${className}`}>
+    <div
+      className={`flex h-full min-h-0 flex-col bg-surface ${
+        guardPulse ? "turn-guard-pulse" : ""
+      } ${className}`}
+    >
       <div className="flex items-center justify-between gap-3 border-b border-line bg-white px-5 py-3">
         <div className="min-w-0">
           <h2 className="text-sm font-semibold text-ink">Market assistant</h2>
@@ -259,7 +310,7 @@ const ChatPanel = forwardRef(function ChatPanel({ className = "" }, ref) {
             title={
               voiceOutput ? "Voice replies on" : "Voice replies off"
             }
-            className={`flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full border transition-colors ${
+            className={`flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full border transition-all active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 ${
               voiceOutput
                 ? "border-brand bg-brand text-white hover:bg-brand-hover"
                 : "border-line text-ink-muted hover:bg-surface-alt"
@@ -282,6 +333,7 @@ const ChatPanel = forwardRef(function ChatPanel({ className = "" }, ref) {
               key={message.id}
               message={message}
               onUiAction={handleUiAction}
+              uiDisabled={loading}
             />
           ))
         )}

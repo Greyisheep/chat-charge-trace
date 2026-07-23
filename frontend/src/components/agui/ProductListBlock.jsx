@@ -15,10 +15,33 @@ export default function ProductListBlock({ props = {}, onAction, disabled }) {
     <div className="grid w-full grid-cols-2 gap-2">
       {products.map((product, index) => {
         const { productId, name, price, currency = "NGN", image } = product || {};
+
+        // Whole card fires the ask. Clicks always reach the panel's
+        // single-flight guard, which ignores them (with a pulse) mid-turn.
+        const ask = () =>
+          onAction?.({ type: "send", text: `Tell me about the ${name}` });
+
+        const handleKeyDown = (event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            ask();
+          }
+        };
+
         return (
           <div
             key={productId ?? index}
-            className="overflow-hidden rounded-lg border border-line bg-white transition-shadow hover:shadow-md"
+            role="button"
+            tabIndex={0}
+            aria-label={`Ask about the ${name}`}
+            aria-disabled={disabled}
+            onClick={ask}
+            onKeyDown={handleKeyDown}
+            className={`group overflow-hidden rounded-lg border border-line bg-white transition-all hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 ${
+              disabled
+                ? "cursor-not-allowed opacity-60"
+                : "cursor-pointer active:scale-[0.99]"
+            }`}
           >
             <div className="h-20 w-full overflow-hidden bg-surface-alt">
               <img
@@ -33,16 +56,13 @@ export default function ProductListBlock({ props = {}, onAction, disabled }) {
               <p className="mt-0.5 text-xs text-ink-body">
                 {formatMoneyString(price, currency)}
               </p>
-              <button
-                type="button"
-                onClick={() =>
-                  onAction?.({ type: "send", text: `Tell me about the ${name}` })
-                }
-                disabled={disabled}
-                className="mt-2 w-full rounded-md border border-line-strong bg-white py-1 text-[11px] font-medium text-ink-body transition-colors hover:border-brand hover:text-brand disabled:cursor-not-allowed disabled:opacity-50"
+              {/* Passive affordance only: the card itself is the button. */}
+              <span
+                aria-hidden
+                className="mt-2 block w-full rounded-md border border-line-strong bg-white py-1 text-center text-[11px] font-medium text-ink-body transition-colors group-hover:border-brand group-hover:text-brand"
               >
                 Ask
-              </button>
+              </span>
             </div>
           </div>
         );

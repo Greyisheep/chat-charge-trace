@@ -4,7 +4,7 @@ import React, { useEffect, useState } from "react";
 import { fetchProducts } from "../lib/api";
 import ProductCard from "./ProductCard";
 
-export default function ProductGrid({ onAskAbout }) {
+export default function ProductGrid({ onAskAbout, disabled = false }) {
   const [products, setProducts] = useState([]);
   const [status, setStatus] = useState("loading");
 
@@ -62,7 +62,12 @@ export default function ProductGrid({ onAskAbout }) {
   return (
     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
       {products.map((product) => (
-        <ProductCard key={product.id} product={product} onAsk={onAskAbout} />
+        <ProductCard
+          key={product.id}
+          product={product}
+          onAsk={onAskAbout}
+          disabled={disabled}
+        />
       ))}
     </div>
   );

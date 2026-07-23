@@ -37,10 +37,13 @@ function CloseIcon() {
 export default function App() {
   const chatRef = useRef(null);
   const [mobileChatOpen, setMobileChatOpen] = useState(false);
+  const [chatBusy, setChatBusy] = useState(false);
 
+  // A card click asks the agent right away through the one send path.
+  // The panel's single-flight guard decides whether it actually goes out.
   const handleAskAbout = useCallback((product) => {
     setMobileChatOpen(true);
-    chatRef.current?.insertPrompt(`Tell me about the ${product.name}`);
+    chatRef.current?.sendMessage(`Tell me about the ${product.name}`);
   }, []);
 
   return (
@@ -58,7 +61,7 @@ export default function App() {
               Tap a product or just ask the assistant. It handles the rest,
               payment included.
             </p>
-            <ProductGrid onAskAbout={handleAskAbout} />
+            <ProductGrid onAskAbout={handleAskAbout} disabled={chatBusy} />
           </div>
         </main>
 
@@ -69,11 +72,11 @@ export default function App() {
           }`}
         >
           <div className="relative h-full">
-            <ChatPanel ref={chatRef} />
+            <ChatPanel ref={chatRef} onLoadingChange={setChatBusy} />
             <button
               type="button"
               onClick={() => setMobileChatOpen(false)}
-              className="absolute right-3 top-2.5 rounded-full p-2 text-ink-muted hover:bg-surface-alt lg:hidden"
+              className="absolute right-3 top-2.5 rounded-full p-2 text-ink-muted transition-colors hover:bg-surface-alt active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 lg:hidden"
               aria-label="Close chat"
             >
               <CloseIcon />
@@ -87,7 +90,7 @@ export default function App() {
         <button
           type="button"
           onClick={() => setMobileChatOpen(true)}
-          className="fixed bottom-5 right-5 z-30 flex h-14 w-14 items-center justify-center rounded-full bg-brand text-white shadow-lg transition-colors hover:bg-brand-hover lg:hidden"
+          className="fixed bottom-5 right-5 z-30 flex h-14 w-14 items-center justify-center rounded-full bg-brand text-white shadow-lg transition-all hover:bg-brand-hover active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 lg:hidden"
           aria-label="Open chat"
         >
           <ChatIcon />

@@ -15,7 +15,7 @@ const TypingBubble = () => (
   </div>
 );
 
-function MessageBubble({ message, onUiAction }) {
+function MessageBubble({ message, onUiAction, uiDisabled = false }) {
   const isUser = message.role === "user";
 
   if (isUser) {
@@ -93,7 +93,7 @@ function MessageBubble({ message, onUiAction }) {
               <AguiMessageBlocks
                 uiComponents={message.uiComponents}
                 onUiAction={onUiAction}
-                disabled={message.isStreaming}
+                disabled={uiDisabled || message.isStreaming}
               />
             </div>
           ) : null}

@@ -50,7 +50,25 @@ export default function ProductCardBlock({ props = {}, onAction, disabled }) {
   if (eta) noteParts.push(eta);
   const deliveryNote = noteParts.length ? `(${noteParts.join(", ")})` : null;
 
-  const handleBuy = () => {
+  // Card click asks about the product. The Buy now button keeps its own,
+  // more specific action; stopPropagation ensures one click never fires both.
+  // Sends always reach the panel's single-flight guard, which ignores them
+  // (with a pulse) while a turn is streaming.
+  const handleAsk = () => {
+    onAction?.({ type: "send", text: `Tell me about the ${name}` });
+  };
+
+  const handleCardKeyDown = (event) => {
+    // Only react to keys pressed on the card itself, not on the Buy button.
+    if (event.target !== event.currentTarget) return;
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      handleAsk();
+    }
+  };
+
+  const handleBuy = (event) => {
+    event.stopPropagation();
     const shipTo = deliveryLocation ? `, shipping to ${deliveryLocation}` : "";
     const expressPart = express ? ", express air" : "";
     onAction?.({
@@ -60,7 +78,17 @@ export default function ProductCardBlock({ props = {}, onAction, disabled }) {
   };
 
   return (
-    <div className="w-full max-w-sm overflow-hidden rounded-lg border border-line bg-white transition-shadow hover:shadow-md">
+    <div
+      role="button"
+      tabIndex={0}
+      aria-label={`Ask about the ${name}`}
+      aria-disabled={disabled}
+      onClick={handleAsk}
+      onKeyDown={handleCardKeyDown}
+      className={`w-full max-w-sm overflow-hidden rounded-lg border border-line bg-white transition-all hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 ${
+        disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer"
+      }`}
+    >
       <div className="h-36 w-full overflow-hidden bg-surface-alt">
         <img
           src={image || placeholderFor(productId)}
@@ -110,11 +138,18 @@ export default function ProductCardBlock({ props = {}, onAction, disabled }) {
           ) : null}
         </div>
 
+        {/* aria-disabled (not disabled) so an ignored click still reaches the
+            single-flight guard and triggers the panel pulse feedback. */}
         <button
           type="button"
           onClick={handleBuy}
-          disabled={disabled}
-          className="mt-3 w-full rounded-lg bg-brand py-2 text-xs font-medium text-white transition-colors hover:bg-brand-hover disabled:cursor-not-allowed disabled:bg-line-strong"
+          aria-disabled={disabled}
+          aria-label={`Buy the ${name} now`}
+          className={`mt-3 w-full rounded-lg py-2 text-xs font-medium text-white transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 ${
+            disabled
+              ? "cursor-not-allowed bg-line-strong"
+              : "bg-brand hover:bg-brand-hover active:scale-[0.99]"
+          }`}
         >
           Buy now
         </button>

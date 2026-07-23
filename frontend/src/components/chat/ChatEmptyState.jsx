@@ -35,7 +35,7 @@ export default function ChatEmptyState({ onSuggestion }) {
             key={label}
             type="button"
             onClick={() => onSuggestion?.(label)}
-            className="rounded-full border border-line bg-white px-4 py-2 text-sm text-ink-body transition-colors hover:border-brand hover:text-brand"
+            className="rounded-full border border-line bg-white px-4 py-2 text-sm text-ink-body transition-all hover:border-brand hover:text-brand active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2"
           >
             {label}
           </button>
