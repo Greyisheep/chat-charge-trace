@@ -52,12 +52,12 @@ PRODUCTS: list[Product] = [
         "image": "/images/beaded-bracelet.jpg",
     },
     {
-        "id": "jollof-mix",
+        "id": "jollof-spice",
         "name": "Jollof Spice Mix",
         "description": "Party jollof starter: smoked pepper base spices measured "
         "for one full pot. No smoky flavour left behind.",
         "price": Decimal("1800.00"),
-        "image": "/images/jollof-mix.jpg",
+        "image": "/images/jollof-spice.jpg",
     },
     {
         "id": "raffia-hat",
