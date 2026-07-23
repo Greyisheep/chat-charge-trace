@@ -1,11 +1,31 @@
 /** AG-UI product_card: rich single-product card with delivery-aware price breakdown. */
 
-import React from "react";
+import React, { useEffect, useState } from "react";
+import { purchasesStore } from "../../lib/purchasesStore";
 import { formatMoneyString } from "../../utils/format";
 import {
   handleProductImageError,
   placeholderFor,
 } from "../../utils/productImages";
+
+const CheckIcon = () => (
+  <svg
+    width="14"
+    height="14"
+    viewBox="0 0 24 24"
+    fill="none"
+    aria-hidden
+    className="inline-block flex-shrink-0"
+  >
+    <path
+      d="M20 6L9 17l-5-5"
+      stroke="currentColor"
+      strokeWidth="2.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </svg>
+);
 
 const PlaneIcon = () => (
   <svg
@@ -67,6 +87,16 @@ export default function ProductCardBlock({ props = {}, onAction, disabled }) {
     }
   };
 
+  // Bought state, matched by product name via the purchases store. Once a
+  // payment for this name verifies, the Buy now button flips to Bought and a
+  // secondary Buy again action appears.
+  const [bought, setBought] = useState(() => purchasesStore.has(name));
+  useEffect(() => {
+    const update = () => setBought(purchasesStore.has(name));
+    update();
+    return purchasesStore.subscribe(update);
+  }, [name]);
+
   const handleBuy = (event) => {
     event.stopPropagation();
     const shipTo = deliveryLocation ? `, shipping to ${deliveryLocation}` : "";
@@ -74,6 +104,17 @@ export default function ProductCardBlock({ props = {}, onAction, disabled }) {
     onAction?.({
       type: "send",
       text: `I want to buy the ${name}${shipTo}${expressPart}`,
+    });
+  };
+
+  // Buy again starts a fresh conversation-driven checkout: never reuse the old
+  // reference. Clearing the name lets a new order flow and re-arms Buy now.
+  const handleBuyAgain = (event) => {
+    event.stopPropagation();
+    purchasesStore.remove(name);
+    onAction?.({
+      type: "send",
+      text: `I would like to buy another ${name}`,
     });
   };
 
@@ -138,21 +179,51 @@ export default function ProductCardBlock({ props = {}, onAction, disabled }) {
           ) : null}
         </div>
 
-        {/* aria-disabled (not disabled) so an ignored click still reaches the
-            single-flight guard and triggers the panel pulse feedback. */}
-        <button
-          type="button"
-          onClick={handleBuy}
-          aria-disabled={disabled}
-          aria-label={`Buy the ${name} now`}
-          className={`mt-3 w-full rounded-lg py-2 text-xs font-medium text-white transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 ${
-            disabled
-              ? "cursor-not-allowed bg-line-strong"
-              : "bg-brand hover:bg-brand-hover active:scale-[0.99]"
-          }`}
-        >
-          Buy now
-        </button>
+        {bought ? (
+          <>
+            {/* Terminal bought state: disabled so it is not clickable. */}
+            <button
+              type="button"
+              disabled
+              aria-label={`${name} already bought`}
+              className="mt-3 flex w-full cursor-not-allowed items-center justify-center gap-1.5 rounded-lg border border-success/30 bg-success/10 py-2 text-xs font-medium text-success"
+            >
+              <CheckIcon />
+              Bought
+            </button>
+            {/* aria-disabled (not disabled) so an ignored click still reaches
+                the single-flight guard and triggers the panel pulse. */}
+            <button
+              type="button"
+              onClick={handleBuyAgain}
+              aria-disabled={disabled}
+              aria-label={`Buy the ${name} again`}
+              className={`mt-2 w-full rounded-lg border py-2 text-xs font-medium transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 ${
+                disabled
+                  ? "cursor-not-allowed border-line bg-surface-alt text-ink-muted"
+                  : "border-brand bg-white text-brand hover:bg-surface-alt active:scale-[0.99]"
+              }`}
+            >
+              Buy again
+            </button>
+          </>
+        ) : (
+          /* aria-disabled (not disabled) so an ignored click still reaches the
+             single-flight guard and triggers the panel pulse feedback. */
+          <button
+            type="button"
+            onClick={handleBuy}
+            aria-disabled={disabled}
+            aria-label={`Buy the ${name} now`}
+            className={`mt-3 w-full rounded-lg py-2 text-xs font-medium text-white transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 ${
+              disabled
+                ? "cursor-not-allowed bg-line-strong"
+                : "bg-brand hover:bg-brand-hover active:scale-[0.99]"
+            }`}
+          >
+            Buy now
+          </button>
+        )}
       </div>
     </div>
   );

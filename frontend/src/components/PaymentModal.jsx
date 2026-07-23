@@ -5,6 +5,7 @@ import { MONNIFY_API_KEY, MONNIFY_CONTRACT_CODE } from "../config";
 import { fetchOrder, verifyOrder } from "../lib/api";
 import { paymentEvents } from "../lib/paymentEvents";
 import { paymentStore } from "../lib/paymentStore";
+import { purchasesStore } from "../lib/purchasesStore";
 import { formatNaira } from "../utils/format";
 
 const INITIAL_POLL_DELAYS = [0, 2000, 4000, 8000];
@@ -101,9 +102,16 @@ export default function PaymentModal() {
         setStatus("verified");
         setStatusNote("Payment verified. Your order is confirmed.");
         setVerifiedOrder(order);
+        // Match by product name so the in-chat card can flip to a bought
+        // state without any backend change. The fetched order carries
+        // product_name; record it alongside the single-use reference.
+        const productName = order.product_name ?? null;
+        if (productName) {
+          purchasesStore.add(productName, order.reference);
+        }
         window.dispatchEvent(
           new CustomEvent("order-verified", {
-            detail: { reference: order.reference },
+            detail: { reference: order.reference, productName },
           }),
         );
       } else {
