@@ -19,6 +19,9 @@ we watch it from the outside.
 | 3 | [03-agentic-tracing.md](03-agentic-tracing.md) | Claret | 20 min | The payoff: cache, cost, re-planning, decisions. |
 | 4 | [04-scale-and-close.md](04-scale-and-close.md) | Both | 5 min | Scale, PII, one-command, the thesis restated. |
 
+**Glance-at-during-the-talk:** [CHEATSHEET.md](CHEATSHEET.md), one page of
+commands, URLs, the exact demo drives, panels, and TraceQL.
+
 Total about 57 minutes, leaving room to breathe in a 60 minute slot.
 
 ## Before the room (pre-flight, do this once)
