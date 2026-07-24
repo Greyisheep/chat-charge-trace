@@ -29,7 +29,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from ..config import get_settings
 from ..money import covers, money
-from ..telemetry import traced
+from ..telemetry import set_span_attribute, span
 from .catalog import Product
 
 STATUS_PENDING = "pending"
@@ -106,6 +106,7 @@ class OrderStore:
 
     # --- creation & lookup ---
 
+    @span("orders.create", amount="amount")
     async def create_order(
         self,
         product: Product,
@@ -122,6 +123,7 @@ class OrderStore:
         """Persist a new pending order. `amount` is the exact total charged
         (product price plus delivery fee), computed server side by the caller."""
         reference = "ord-" + secrets.token_hex(5)  # 10 hex chars
+        set_span_attribute("reference", reference)  # computed locally, not a parameter
         order = Order(
             reference=reference,
             product_id=product["id"],
@@ -137,10 +139,9 @@ class OrderStore:
             delivery_fee=money(delivery_fee),
             status=STATUS_PENDING,
         )
-        with traced("orders.create", reference=reference, amount=str(order.amount)):
-            async with self._sessions()() as session:
-                session.add(order)
-                await session.commit()
+        async with self._sessions()() as session:
+            session.add(order)
+            await session.commit()
         return order
 
     async def get(self, reference: str) -> Order | None:
@@ -150,6 +151,7 @@ class OrderStore:
 
     # --- the trust boundary ---
 
+    @span("orders.verify", reference="reference")
     async def verify(self, reference: str) -> Order | None:
         """Re-derive an order's status from provider truth.
 
@@ -167,9 +169,8 @@ class OrderStore:
             if order.status == STATUS_VERIFIED:
                 return order  # terminal; nothing a repeat call should change
 
-            with traced("orders.verify", reference=reference):
-                # The verifier is sync (httpx client); keep the event loop free.
-                truth = await asyncio.to_thread(self.verifier, reference)
+            # The verifier is sync (httpx client); keep the event loop free.
+            truth = await asyncio.to_thread(self.verifier, reference)
 
             status = str(truth.get("status", "UNKNOWN")).upper()
             amount_paid = money(truth.get("amount_paid") or 0)  # exact, never a float

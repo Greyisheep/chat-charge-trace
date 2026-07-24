@@ -19,7 +19,7 @@ from typing import Any
 import httpx
 
 from ..config import Settings
-from ..telemetry import register_secret, traced
+from ..telemetry import register_secret, span
 
 log = logging.getLogger("monnify")
 
@@ -51,17 +51,18 @@ class MonnifySandboxClient:
     def __exit__(self, *exc: object) -> None:
         self._http.close()
 
+    @span("monnify.authenticate")
     def authenticate(self) -> str:
         creds = f"{self._settings.monnify_api_key}:{self._settings.monnify_secret_key}"
         basic = base64.b64encode(creds.encode()).decode()
-        with traced("monnify.authenticate"):
-            resp = self._http.post(_AUTH_PATH, headers={"Authorization": f"Basic {basic}"})
-            token = _ok(resp)["responseBody"]["accessToken"]
-            register_secret(token)  # never let the bearer token surface in a log
-            self._token = token
-            log.info("monnify.authenticated")
-            return token
+        resp = self._http.post(_AUTH_PATH, headers={"Authorization": f"Basic {basic}"})
+        token = _ok(resp)["responseBody"]["accessToken"]
+        register_secret(token)  # never let the bearer token surface in a log
+        self._token = token
+        log.info("monnify.authenticated")
+        return token
 
+    @span("monnify.initialize_transaction", amount="amount", reference="reference")
     def initialize_transaction(
         self,
         *,
@@ -86,23 +87,23 @@ class MonnifySandboxClient:
         }
         if redirect_url:
             payload["redirectUrl"] = redirect_url
-        with traced("monnify.initialize_transaction", amount=str(amount), reference=reference):
-            resp = self._http.post(
-                _INIT_PATH,
-                headers={"Authorization": f"Bearer {self._token}"},
-                json=payload,
-            )
-            body = _ok(resp)["responseBody"]
-            result = {
-                "payment_reference": body["paymentReference"],
-                "transaction_reference": body["transactionReference"],
-                "checkout_url": body["checkoutUrl"],
-            }
-            log.info(
-                "monnify.transaction.initialized reference=%s", result["payment_reference"]
-            )
-            return result
+        resp = self._http.post(
+            _INIT_PATH,
+            headers={"Authorization": f"Bearer {self._token}"},
+            json=payload,
+        )
+        body = _ok(resp)["responseBody"]
+        result = {
+            "payment_reference": body["paymentReference"],
+            "transaction_reference": body["transactionReference"],
+            "checkout_url": body["checkoutUrl"],
+        }
+        log.info(
+            "monnify.transaction.initialized reference=%s", result["payment_reference"]
+        )
+        return result
 
+    @span("monnify.query_transaction", reference="payment_reference")
     def query_transaction(self, *, payment_reference: str) -> dict[str, Any]:
         """Authoritative transaction state by payment reference.
 
@@ -111,23 +112,22 @@ class MonnifySandboxClient:
         """
         if self._token is None:
             self.authenticate()
-        with traced("monnify.query_transaction", reference=payment_reference):
-            resp = self._http.get(
-                _QUERY_PATH,
-                headers={"Authorization": f"Bearer {self._token}"},
-                params={"paymentReference": payment_reference},
-            )
-            body = _ok(resp)["responseBody"]
-            result = {
-                "status": body.get("paymentStatus", "UNKNOWN"),
-                "amount_paid": str(body.get("amountPaid") or "0"),  # exact string; money() parses it
-            }
-            log.info(
-                "monnify.transaction.queried reference=%s status=%s",
-                payment_reference,
-                result["status"],
-            )
-            return result
+        resp = self._http.get(
+            _QUERY_PATH,
+            headers={"Authorization": f"Bearer {self._token}"},
+            params={"paymentReference": payment_reference},
+        )
+        body = _ok(resp)["responseBody"]
+        result = {
+            "status": body.get("paymentStatus", "UNKNOWN"),
+            "amount_paid": str(body.get("amountPaid") or "0"),  # exact string; money() parses it
+        }
+        log.info(
+            "monnify.transaction.queried reference=%s status=%s",
+            payment_reference,
+            result["status"],
+        )
+        return result
 
 
 def _ok(resp: httpx.Response) -> dict[str, Any]:
