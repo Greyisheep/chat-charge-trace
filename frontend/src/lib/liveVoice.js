@@ -419,6 +419,23 @@ export class LiveVoiceSession {
 
   // --- Teardown ----------------------------------------------------------
 
+  /**
+   * Send a typed message into the live conversation over the same socket the
+   * audio flows on. Used when the buyer types (e.g. a Nigerian name/email the
+   * speech recognizer would mangle) during a live turn, so the text lands in
+   * the SAME conversation the model is speaking in. Returns true if sent.
+   *
+   * @param {string} text
+   * @returns {boolean}
+   */
+  sendText(text) {
+    const value = typeof text === "string" ? text.trim() : "";
+    if (!value) return false;
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
+    this._safeSend({ type: "text", text: value });
+    return true;
+  }
+
   /** Public close: politely stop the turn and release everything. No leaks. */
   close() {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {

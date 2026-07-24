@@ -139,6 +139,10 @@ const ChatPanel = forwardRef(function ChatPanel(
 
   const liveSessionRef = useRef(null);
   const liveActiveRef = useRef(false);
+  // Dedupe guard for the live text path only. The SSE path has its own
+  // single-flight guard (loadingRef); the live socket is a different transport
+  // so it is not blocked by that, but a rapid identical resend is still a no-op.
+  const lastLiveTextRef = useRef(null);
   // Accumulators for the two live transcript bubbles in flight.
   const liveUserRef = useRef({ id: null, text: "" });
   const liveAgentRef = useRef({ id: null, text: "" });
@@ -524,7 +528,13 @@ const ChatPanel = forwardRef(function ChatPanel(
           },
         });
         // Speak only the settled assistant text, once, when voice mode is on.
-        if (voiceOutputRef.current && finalText.trim()) {
+        // Never speak while a live session is active: Gemini Live is already
+        // streaming the reply as audio, so browser TTS would be a second voice.
+        if (
+          voiceOutputRef.current &&
+          !liveActiveRef.current &&
+          finalText.trim()
+        ) {
           speak(finalText);
         }
       } catch (error) {
@@ -544,6 +554,42 @@ const ChatPanel = forwardRef(function ChatPanel(
       }
     },
     [patchMessage, triggerGuardPulse],
+  );
+
+  // Single entry point the composer sends through (typed Enter/click and the
+  // speech recognizer final both funnel here). While a live session is active,
+  // typed text must land in the SAME live conversation over the live socket,
+  // NOT start a separate SSE turn that a second voice would then read aloud.
+  const handleComposerSend = useCallback(
+    (rawText) => {
+      const text = (rawText ?? "").trim();
+      if (!text) return;
+
+      // Live path: send over the live socket, render the typed line as a user
+      // bubble in the live thread, and let the model answer over live audio +
+      // transcript. This is how a mistyped-by-accent name/email gets in cleanly.
+      if (liveActiveRef.current && liveSessionRef.current) {
+        // Dedupe a rapid identical resend (double Enter) without blocking a
+        // legitimately different message.
+        if (text === lastLiveTextRef.current) return;
+        const sent = liveSessionRef.current.sendText(text);
+        if (!sent) return; // socket not open; drop rather than fork to SSE
+        lastLiveTextRef.current = text;
+        window.setTimeout(() => {
+          if (lastLiveTextRef.current === text) lastLiveTextRef.current = null;
+        }, 1500);
+        // Finalize any assistant bubble still streaming, then show the typed
+        // line as a user bubble in the same live conversation.
+        finalizeLiveAgent();
+        appendMessage({ role: "user", text, timestamp: new Date() });
+        setInput("");
+        return;
+      }
+
+      // No live session: behave exactly as before (SSE turn + its own guard).
+      sendMessage(text);
+    },
+    [appendMessage, finalizeLiveAgent, sendMessage],
   );
 
   const insertPrompt = useCallback((text) => {
@@ -600,7 +646,10 @@ const ChatPanel = forwardRef(function ChatPanel(
               {expanded ? <CollapseIcon /> : <ExpandIcon />}
             </button>
           ) : null}
-          {isSpeechSynthesisSupported ? (
+          {/* Browser voice-output (SpeechSynthesis) toggle. Hidden while a live
+              session is active: Gemini Live already provides the audio, so this
+              second voice must not be reachable. It returns on the floor path. */}
+          {isSpeechSynthesisSupported && !liveActive ? (
             <button
               type="button"
               onClick={toggleVoiceOutput}
@@ -657,8 +706,8 @@ const ChatPanel = forwardRef(function ChatPanel(
         <ChatComposer
           input={input}
           setInput={setInput}
-          onSend={() => sendMessage(input)}
-          onVoiceSend={sendMessage}
+          onSend={() => handleComposerSend(input)}
+          onVoiceSend={handleComposerSend}
           loading={loading}
           inputRef={inputRef}
           productNames={productNames}
