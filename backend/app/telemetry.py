@@ -440,3 +440,21 @@ def estimate_cost_usd(
         + Decimal(max(0, output_tokens)) * Decimal(price["output"])
     ) / _ONE_MILLION
     return cost
+
+
+# Approximate USD -> NGN display rate. This is a rough convenience conversion
+# for a Naira-native audience (Gemini is billed in USD), not an FX source of
+# truth; update as the rate moves. Decimal so cost stays exact. see #11
+USD_TO_NGN = Decimal("1600")
+
+
+def estimate_cost_ngn(
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    cached_input_tokens: int = 0,
+) -> Decimal:
+    """Same estimate as estimate_cost_usd, converted to Naira at USD_TO_NGN."""
+    return estimate_cost_usd(
+        model, input_tokens, output_tokens, cached_input_tokens
+    ) * USD_TO_NGN

@@ -1,0 +1,33 @@
+# Opt-in Langfuse Cloud overlay for the monitoring stack. see #11
+#
+# Grafana stays the primary surface (this repo is Grafana-first). This overlay
+# only adds a second traces exporter that fans the SAME native OTel spans out to
+# Langfuse Cloud, so the full prompt and completion (which Tempo truncates at
+# 2048 bytes) can be shown intact. It is the "what did Grafana miss" cameo.
+#
+# Enable:
+#   1. Put your Langfuse Cloud keys in the repo-root .env (gitignored):
+#        LANGFUSE_PUBLIC_KEY=pk-lf-...
+#        LANGFUSE_SECRET_KEY=sk-lf-...
+#        LANGFUSE_OTEL_AUTH=<base64 of "pk-lf-...:sk-lf-...">
+#      (LANGFUSE_OTEL_AUTH is `printf '%s:%s' "$PK" "$SK" | base64`.)
+#   2. From monitoring/:
+#        docker compose -f docker-compose.yml -f docker-compose.langfuse.yml up -d
+#
+# The default `docker compose up` (base file only) never touches Langfuse, so a
+# fresh clone without keys runs clean.
+
+services:
+  otel-collector:
+    # command REPLACES the base command, so both configs must be listed. The
+    # second --config merges the Langfuse exporter + traces/langfuse pipeline in.
+    command:
+      - "--config=/etc/otel-collector-config.yaml"
+      - "--config=/etc/otel-collector-config.langfuse.yaml"
+    # volumes MERGE with the base list, so the base config stays mounted too.
+    volumes:
+      - ./otel-collector/otel-collector-config.langfuse.yaml:/etc/otel-collector-config.langfuse.yaml:ro
+    # Bring the base64 auth (and the rest of the app env) into the collector so
+    # ${env:LANGFUSE_OTEL_AUTH} resolves. env_file lives at the repo root.
+    env_file:
+      - ../.env

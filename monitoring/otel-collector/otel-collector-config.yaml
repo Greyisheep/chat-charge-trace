@@ -13,9 +13,10 @@
 #     OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=EVENT_ONLY), so bodies
 #     go to Loki and NEVER to Tempo, which silently truncates any attribute past
 #     2048 bytes. The transform below deletes any content that still rides a span.
-#   * This is the DEFAULT (light) stack. The Langfuse full-fidelity LLM surface
-#     is opt-in: run with the langfuse profile AND point the collector at
-#     otel-collector-config.langfuse.yaml (see that file's header).
+#   * This is the DEFAULT (light) stack, Grafana-first. The Langfuse
+#     full-fidelity LLM surface is opt-in via a compose override that merges
+#     otel-collector-config.langfuse.yaml on top (see
+#     monitoring/docker-compose.langfuse.yml and that file's header).
 
 extensions:
   health_check:

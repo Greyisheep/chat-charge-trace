@@ -25,6 +25,7 @@ from google.adk.plugins import ReflectAndRetryToolPlugin
 from ..telemetry import (
     add_span_event,
     estimate_cost_usd,
+    USD_TO_NGN,
     increment_counter,
     record_histogram,
 )
@@ -72,6 +73,8 @@ def record_llm_usage(model: str, usage: Any, door: str | None = None) -> None:
 
         cost = estimate_cost_usd(model, prompt, candidates, cached)
         record_histogram("oja.llm.cost_usd", float(cost), attrs)
+        # Same cost in Naira for a Naira-native audience (Gemini bills in USD).
+        record_histogram("oja.llm.cost_ngn", float(cost * USD_TO_NGN), attrs)
     except Exception as exc:  # a telemetry miss must never break a turn (#11)
         log.debug("telemetry_hooks.record_llm_usage.failed error=%s", exc)
 

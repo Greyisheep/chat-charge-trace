@@ -98,12 +98,17 @@ Oja Connect backend  (telemetry.py: Tracer + Meter + Logger providers)
 Default stack: `tempo`, `otel-collector`, `prometheus`, `loki`, `grafana`.
 Bring it up with `docker compose -f monitoring/docker-compose.yml up -d`.
 
-### Why content lives on logs, never on spans
+### Why content never reaches Tempo
 
-Prompt and response bodies are emitted as **OTel log events**, driven by
-`OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=EVENT_ONLY` (and the legacy
-`ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS=false`). They go to Loki. They do **not**
-go to Tempo, because:
+Prompt and response bodies are captured with
+`OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=SPAN_AND_EVENT` (and the
+legacy `ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS=true`), so content rides both spans
+and OTel log events. The collector then **strips the content off the Tempo
+branch** (`transform/strip_content`) while the Loki logs pipeline and the opt-in
+Langfuse branch keep it. So bodies reach Loki and Langfuse at full fidelity but
+**never reach Tempo**. Content is on spans (not events-only) specifically so the
+Langfuse cameo can render the full prompt and completion; the Tempo strip is
+what keeps that content out of the trace store, because:
 
 - **Tempo silently truncates any span attribute past 2048 bytes.** A long LLM
   response would be cut with no error and no marker. You would not know your

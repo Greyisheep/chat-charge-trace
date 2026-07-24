@@ -1,0 +1,41 @@
+# Langfuse Cloud overlay (opt-in). see #11
+#
+# This is NOT a full config. It is merged on top of otel-collector-config.yaml
+# via a SECOND --config flag (see monitoring/docker-compose.langfuse.yml), so
+# the base stays the single source of truth for receivers, processors, and the
+# Tempo/Prometheus/Loki pipelines. The collector deep-merges the two files.
+#
+# Role: Grafana (Tempo) is the primary surface and stays first. Langfuse exists
+# only to SHOW the one thing a default Grafana stack cannot: the full prompt and
+# completion, which Tempo silently truncates at 2048 bytes per attribute. The
+# same native OTel spans fan out to both, so the same trace appears truncated in
+# Grafana and complete in Langfuse. That side by side is the demo. (see #11)
+#
+# Why native OTLP and not the OpenInference instrumentor: OpenInference
+# SUPPRESSES ADK's native spans and DROPS Gemini cache_read tokens, which would
+# gut the native token/cache/graph data Grafana depends on. Langfuse's native
+# OTLP endpoint ingests our gen_ai.* spans directly and preserves them. (see #11)
+
+exporters:
+  # otlphttp appends /v1/traces, so this resolves to
+  # https://us.cloud.langfuse.com/api/public/otel/v1/traces (the signal path).
+  # Auth is Basic base64("pk:sk"), supplied as LANGFUSE_OTEL_AUTH from the
+  # gitignored repo-root .env (never committed). gRPC is not supported by
+  # Langfuse; HTTP only. The ingestion-version header enables v4 realtime ingest.
+  otlphttp/langfuse:
+    endpoint: https://us.cloud.langfuse.com/api/public/otel
+    headers:
+      Authorization: "Basic ${env:LANGFUSE_OTEL_AUTH}"
+      x-langfuse-ingestion-version: "4"
+
+service:
+  pipelines:
+    # A SEPARATE traces pipeline off the same otlp receiver: the collector fans
+    # the spans out to both Tempo (base pipeline) and here. This branch keeps
+    # CONTENT (no strip_content) so Langfuse shows the full prompt and response,
+    # but still runs transform/redact_pii so buyer PII (cards, emails, account
+    # and phone digit runs) never leaves for the cloud in the clear. (see #11)
+    traces/langfuse:
+      receivers: [otlp]
+      processors: [batch, transform/redact_pii]
+      exporters: [otlphttp/langfuse]
