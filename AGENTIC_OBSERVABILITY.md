@@ -96,7 +96,10 @@ Oja Connect backend  (telemetry.py: Tracer + Meter + Logger providers)
 ```
 
 Default stack: `tempo`, `otel-collector`, `prometheus`, `loki`, `grafana`.
-Bring it up with `docker compose -f monitoring/docker-compose.yml up -d`.
+These now live in the **root** `docker-compose.yml` alongside the app, all on
+one `oja` network, so `docker compose up -d` from the repo root brings up the
+whole thing. To start only the observability services (local backend dev), run
+`docker compose up -d tempo otel-collector prometheus loki grafana`.
 
 ### Why content never reaches Tempo
 
@@ -144,13 +147,15 @@ Observability"**:
 6. **Slow or high-token traces** (a Tempo / TraceQL panel). Click a row, open
    the trace, then jump to its Loki content via trace-to-logs.
 
-> **Metric-name caveat on the panels.** The OTLP-to-Prometheus exporter may
-> append a unit suffix: durations tend to become `..._seconds_*`, token counts
-> may become `..._tokens_*`. If a panel is empty, open the Prometheus metric
-> browser and adjust the suffix in the query. Also note: ADK's native
-> token-usage metric only splits **input / output**. The **cache_read** series
-> and the **cost** series depend on the in-code instrumentation follow-up
-> recording them as metrics (see the TODOs below).
+> **Metric names.** ADK's native token-usage metric (`gen_ai_client_token_usage`)
+> only splits **input / output**; ADK does not export `cache_read` as a metric.
+> So the cache and cost panels use the metrics the in-code instrumentation
+> records (implemented, see #11): `oja_llm_input_tokens`,
+> `oja_llm_output_tokens`, `oja_llm_cached_input_tokens` (the cache-hit series),
+> `oja_llm_cost_usd`, and `oja_llm_cost_ngn` (cost in Naira as well as USD).
+> The OTLP-to-Prometheus exporter appends `_sum` / `_count` / `_bucket` to these
+> histograms; the cache-ratio panel is
+> `oja_llm_cached_input_tokens_sum / oja_llm_input_tokens_sum`.
 
 ### TraceQL (Tempo Explore)
 

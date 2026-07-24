@@ -22,9 +22,13 @@ COPY . .
 ARG VITE_API_BASE_URL=""
 ARG VITE_MONNIFY_API_KEY=""
 ARG VITE_MONNIFY_CONTRACT_CODE=""
+# Native live voice is compiled in only when this is "1"; empty keeps the
+# browser Web Speech floor. It must be present at build time for Vite to inline.
+ARG VITE_VOICE_NATIVE=""
 ENV VITE_API_BASE_URL=$VITE_API_BASE_URL \
     VITE_MONNIFY_API_KEY=$VITE_MONNIFY_API_KEY \
-    VITE_MONNIFY_CONTRACT_CODE=$VITE_MONNIFY_CONTRACT_CODE
+    VITE_MONNIFY_CONTRACT_CODE=$VITE_MONNIFY_CONTRACT_CODE \
+    VITE_VOICE_NATIVE=$VITE_VOICE_NATIVE
 
 RUN npm run build
 

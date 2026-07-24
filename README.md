@@ -70,7 +70,16 @@ cp .env.example .env
 docker compose up --build
 ```
 
-Then open http://localhost:5173. Compose brings up three containers in order: Postgres (with a healthcheck), the backend on :8000 (waits for Postgres, has its own healthcheck on /api/products), and the frontend on :5173 (waits for a healthy backend).
+Then open http://localhost:5173 for the app and http://localhost:3000 for Grafana. One root compose brings up the app AND the full observability stack, eight services on a shared `oja` network:
+
+- **App:** Postgres (healthcheck), backend on :8000 (waits for Postgres, healthcheck on /api/products), frontend on :5173 (waits for a healthy backend).
+- **Observability:** otel-collector (:4318 OTLP in, :8889 metrics out), Tempo (:3200), Prometheus (:9090), Loki (:3100), Grafana (:3000). The dockerized backend ships OTLP to the collector by service name; nothing extra to wire. See [`AGENTIC_OBSERVABILITY.md`](AGENTIC_OBSERVABILITY.md) and [`monitoring/README.md`](monitoring/README.md).
+
+The Langfuse Cloud fan-out is an opt-in overlay layered on the same root compose:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.langfuse.yml up -d --build
+```
 
 The backend refuses to boot unless `MONNIFY_BASE_URL` contains `sandbox`. That is on purpose; this demo never talks to production Monnify and there is no override flag.
 
@@ -105,11 +114,12 @@ This is roughly the arc shown on stage:
 
 ## Local dev without Docker
 
-The pre-docker workflow still works and is nicer for hacking:
+The pre-docker workflow still works and is nicer for hacking. Bring up the infra (Postgres plus the observability stack) in containers, then run the backend and frontend on the host. The `.env` OTEL endpoints point at `localhost:4318`, which reaches the containerized collector through its published port:
 
 ```bash
-# 1. Postgres only (publishes 5433 on localhost)
-docker compose up -d postgres
+# 1. Infra only: Postgres (publishes 5433) + the observability stack
+docker compose up -d postgres tempo otel-collector prometheus loki grafana
+# (or just: docker compose up -d postgres  if you do not need traces locally)
 
 # 2. Backend
 cd backend
@@ -131,7 +141,7 @@ The mic button in the chat composer uses the browser's Web Speech API for speech
 
 ## Troubleshooting
 
-- **Port already in use (5433, 8000, 5173).** Something else owns the port. Find it with `lsof -i :8000` and stop it, or edit the left side of the port mapping in `docker-compose.yml`.
+- **Port already in use.** The stack publishes 5433 (postgres), 8000 (backend), 5173 (frontend), 3000 (grafana), 3100 (loki), 3200 (tempo), 4318 and 8889 (collector), 9090 (prometheus). Something else owns one of them. Find it with `lsof -i :8000` and stop it, or edit the left side of the port mapping in `docker-compose.yml`.
 - **Backend exits immediately with a sandbox error.** `MONNIFY_BASE_URL` does not contain `sandbox`. Set it back to `https://sandbox.monnify.com`; there is no override.
 - **Checkout popup opens then errors, or transactions fail to initialize.** Monnify keys are wrong or from the wrong mode. All three values must come from the **sandbox** view of the Monnify dashboard, and `VITE_MONNIFY_API_KEY` / `VITE_MONNIFY_CONTRACT_CODE` must match `MONNIFY_API_KEY` / `MONNIFY_CONTRACT_CODE`. Remember the rebuild: `docker compose up --build`.
 - **Agent replies with a model error.** Check `GOOGLE_API_KEY`, and that `GOOGLE_MODEL_NAME` is a model your key can use. `gemini-flash-latest` is the safe default; a typo here surfaces as a 404 from the Gemini API in the backend logs (`docker compose logs backend`).

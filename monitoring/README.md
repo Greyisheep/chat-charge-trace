@@ -1,6 +1,14 @@
-# Oja Connect - Monitoring Stack
+# Oja Connect - Monitoring Config
 
 Agent traces for the "Chat, Charge, Trace" workshop.
+
+> **This directory is now config only, not a standalone compose.** The five
+> monitoring services (tempo, prometheus, loki, otel-collector, grafana) live in
+> the **root** `docker-compose.yml` alongside the app, all on one `oja` network,
+> so a fresh clone runs everything with `docker compose up --build` from the repo
+> root. This folder keeps the mounted config files (`tempo/`, `prometheus/`,
+> `loki/`, `otel-collector/`, `grafana/provisioning/`). There is no
+> `monitoring/docker-compose.yml` any more.
 
 The backend ships OpenTelemetry spans to the OTEL Collector, which forwards
 them to Tempo. Grafana connects to Tempo and lets you explore individual traces.
@@ -36,9 +44,16 @@ Oja Connect backend
 
 ## Quick start
 
+From the repo root (brings up the app and all five monitoring services):
+
 ```bash
-cd monitoring
 docker compose up -d
+```
+
+To bring up just the observability stack (for local backend dev on the host):
+
+```bash
+docker compose up -d tempo otel-collector prometheus loki grafana
 ```
 
 Open http://localhost:3000 - no login needed.
@@ -57,16 +72,18 @@ OTEL_TRACES_SAMPLER=always_on
 ```
 
 When the backend runs inside Docker (i.e. `docker compose up` from the repo
-root), use the collector's container name instead:
+root), it reaches the collector by service name. The root compose already sets
+this on the backend service, overriding the `.env` value, so you do not edit
+anything:
 
 ```env
 OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
 ```
 
-That requires the backend container to be on the `oja-monitoring` network.
-For the workshop the backend and monitoring stacks are kept separate; the
-simplest path is to run the backend locally (`./run.sh`) and point it at
-`http://localhost:4318`.
+Every service is on the one shared `oja` network, so the backend container
+resolves `otel-collector` directly. For local backend dev on the host, the
+`.env` `localhost:4318` value reaches the containerized collector through its
+published port; run the backend with `./run.sh` and leave the endpoint as is.
 
 ## Span hierarchy
 
@@ -137,17 +154,18 @@ parents to show the call graph.
 
 ## Deploying to a remote VM
 
-Rsync this folder to the VM (the app itself stays wherever it runs):
+The compose file now lives at the repo root and starts the app plus the
+monitoring services together, so deploy the repo (not just this folder):
 
 ```bash
-rsync -av monitoring/ user@vm-ip:/opt/oja-monitoring/
+rsync -av --exclude .git ./ user@vm-ip:/opt/oja-connect/
 ```
 
-Start the stack on the VM:
+Start it on the VM (add the observability services you want, or all of them):
 
 ```bash
 ssh user@vm-ip
-cd /opt/oja-monitoring
+cd /opt/oja-connect
 docker compose up -d
 ```
 

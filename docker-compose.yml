@@ -1,4 +1,29 @@
+# Oja Connect - one-command workshop stack (issues #1, #11).
+#
+# A fresh clone runs the whole thing (app + observability) with:
+#     docker compose up --build
+#
+# Eight services on one shared `oja` network:
+#   postgres  backend  frontend            the app
+#   otel-collector  tempo  prometheus  loki  grafana   the observability stack
+#
+# Signal flow:
+#   backend --OTLP :4318--> otel-collector --> Tempo  (traces, bodies stripped)
+#                                          --> Prometheus (metrics, scraped @ :8889)
+#                                          --> Loki  (logs, full content)
+#                           Grafana :3000 reads all three.
+#
+# The Langfuse Cloud fan-out is an opt-in overlay:
+#   docker compose -f docker-compose.yml -f docker-compose.langfuse.yml up -d --build
+#
+# For local (non-docker) backend dev, bring up infra only and run the backend
+# with backend/run.sh + the frontend with npm run dev:
+#   docker compose up -d postgres tempo otel-collector prometheus loki grafana
+# The .env OTEL endpoints at localhost:4318 serve that path; the service-level
+# overrides below only apply inside the containers.
+
 services:
+  # ----------------------------------------------------------------- Postgres --
   postgres:
     image: postgres:16-alpine
     container_name: oja-postgres
@@ -10,28 +35,45 @@ services:
       - "5433:5432"
     volumes:
       - oja_pgdata:/var/lib/postgresql/data
+    networks:
+      - oja
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U oja -d oja"]
       interval: 5s
       timeout: 3s
       retries: 10
 
+  # ------------------------------------------------------------------ Backend --
   backend:
     build: ./backend
     container_name: oja-backend
     # The repo-root .env supplies Monnify and Gemini credentials to the
-    # container at runtime; nothing is baked into the image.
+    # container at runtime; nothing is baked into the image. It also carries the
+    # ADK content-capture and semconv opt-in vars the telemetry layer reads.
     env_file: .env
     environment:
       # Inside the compose network the database lives at the service
       # hostname, not localhost. This overrides the .env value, which points
       # at the published port 5433 for the local (non-docker) dev path.
       DATABASE_URL: postgresql+asyncpg://oja:oja@postgres:5432/oja
+      # OTLP goes to the collector by service name inside the compose network.
+      # These service-level values override the .env ones (which point at
+      # localhost:4318 for the local non-docker dev path). Telemetry is
+      # non-fatal: a missing collector logs a warning, never blocks a request.
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: http://otel-collector:4318/v1/metrics
+      OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: http://otel-collector:4318/v1/logs
     ports:
       - "8000:8000"
+    networks:
+      - oja
     depends_on:
       postgres:
         condition: service_healthy
+      otel-collector:
+        # Telemetry is non-fatal, so service_started (not healthy) is enough;
+        # this only orders startup so early spans have somewhere to land.
+        condition: service_started
     healthcheck:
       # The slim image has no curl; stdlib urllib does the job.
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/products')"]
@@ -40,6 +82,7 @@ services:
       retries: 12
       start_period: 20s
 
+  # ----------------------------------------------------------------- Frontend --
   frontend:
     build:
       context: ./frontend
@@ -51,12 +94,125 @@ services:
         VITE_API_BASE_URL: ${VITE_API_BASE_URL:-}
         VITE_MONNIFY_API_KEY: ${VITE_MONNIFY_API_KEY:-}
         VITE_MONNIFY_CONTRACT_CODE: ${VITE_MONNIFY_CONTRACT_CODE:-}
+        # Native live voice is compiled in only when .env sets it to "1".
+        VITE_VOICE_NATIVE: ${VITE_VOICE_NATIVE:-}
     container_name: oja-frontend
     ports:
       - "5173:5173"
+    networks:
+      - oja
     depends_on:
       backend:
         condition: service_healthy
 
+  # -------------------------------------------------------------------- Tempo --
+  tempo:
+    image: grafana/tempo:2.5.0
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./monitoring/tempo/tempo.yaml:/etc/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    ports:
+      - "3200:3200"   # HTTP query - Grafana datasource + /ready health check
+    networks:
+      - oja
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3200/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  # --------------------------------------------------------------- Prometheus --
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      # Exemplars carry trace_id -> deep-link a Prometheus panel into Tempo.
+      - "--enable-feature=exemplar-storage"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - oja
+
+  # -------------------------------------------------------------------- Loki --
+  loki:
+    image: grafana/loki:3.1.1
+    command: ["-config.file=/etc/loki/loki-config.yaml"]
+    volumes:
+      - ./monitoring/loki/loki-config.yaml:/etc/loki/loki-config.yaml:ro
+      - loki-data:/loki
+    ports:
+      - "3100:3100"
+    networks:
+      - oja
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3100/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  # --------------------------------------------------------- OTEL Collector --
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.101.0
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./monitoring/otel-collector/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    # The base config does not reference any .env var, so this is harmless on
+    # the default stack. It is here so ${env:LANGFUSE_OTEL_AUTH} resolves when
+    # the Langfuse overlay adds the second config.
+    env_file: .env
+    ports:
+      - "4318:4318"   # OTLP/HTTP - backend sends traces + metrics + logs here
+      - "8889:8889"   # Prometheus exporter - scraped by Prometheus
+    networks:
+      - oja
+    depends_on:
+      tempo:
+        condition: service_healthy
+      loki:
+        condition: service_started
+      prometheus:
+        condition: service_started
+
+  # ----------------------------------------------------------------- Grafana --
+  grafana:
+    image: grafana/grafana:11.1.0
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    environment:
+      # No login needed for the workshop - anyone who opens :3000 gets Admin.
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_AUTH_DISABLE_LOGIN_FORM=true
+      - GF_FEATURE_TOGGLES_ENABLE=traceqlEditor
+    networks:
+      - oja
+    depends_on:
+      tempo:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
 volumes:
-  oja_pgdata:
+  oja_pgdata:                 # postgres demo data (survives `down`, not `down -v`)
+  tempo-data:                 # trace blocks
+  prometheus-data:            # metric TSDB
+  loki-data:                  # log chunks + index
+  grafana-data:               # dashboard state, preferences
+
+networks:
+  oja:
+    name: oja

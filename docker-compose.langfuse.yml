@@ -1,4 +1,4 @@
-# Opt-in Langfuse Cloud overlay for the monitoring stack. see #11
+# Opt-in Langfuse Cloud overlay for the consolidated root stack. see #11
 #
 # Grafana stays the primary surface (this repo is Grafana-first). This overlay
 # only adds a second traces exporter that fans the SAME native OTel spans out to
@@ -11,11 +11,12 @@
 #        LANGFUSE_SECRET_KEY=sk-lf-...
 #        LANGFUSE_OTEL_AUTH=<base64 of "pk-lf-...:sk-lf-...">
 #      (LANGFUSE_OTEL_AUTH is `printf '%s:%s' "$PK" "$SK" | base64`.)
-#   2. From monitoring/:
-#        docker compose -f docker-compose.yml -f docker-compose.langfuse.yml up -d
+#   2. From the repo root:
+#        docker compose -f docker-compose.yml -f docker-compose.langfuse.yml up -d --build
 #
 # The default `docker compose up` (base file only) never touches Langfuse, so a
-# fresh clone without keys runs clean.
+# fresh clone without keys runs clean. The collector already carries env_file
+# .env in the base compose, so LANGFUSE_OTEL_AUTH resolves without extra wiring.
 
 services:
   otel-collector:
@@ -26,8 +27,4 @@ services:
       - "--config=/etc/otel-collector-config.langfuse.yaml"
     # volumes MERGE with the base list, so the base config stays mounted too.
     volumes:
-      - ./otel-collector/otel-collector-config.langfuse.yaml:/etc/otel-collector-config.langfuse.yaml:ro
-    # Bring the base64 auth (and the rest of the app env) into the collector so
-    # ${env:LANGFUSE_OTEL_AUTH} resolves. env_file lives at the repo root.
-    env_file:
-      - ../.env
+      - ./monitoring/otel-collector/otel-collector-config.langfuse.yaml:/etc/otel-collector-config.langfuse.yaml:ro
