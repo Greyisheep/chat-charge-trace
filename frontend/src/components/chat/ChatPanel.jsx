@@ -646,10 +646,14 @@ const ChatPanel = forwardRef(function ChatPanel(
               {expanded ? <CollapseIcon /> : <ExpandIcon />}
             </button>
           ) : null}
-          {/* Browser voice-output (SpeechSynthesis) toggle. Hidden while a live
-              session is active: Gemini Live already provides the audio, so this
-              second voice must not be reachable. It returns on the floor path. */}
-          {isSpeechSynthesisSupported && !liveActive ? (
+          {/* Browser voice-output (SpeechSynthesis) toggle. When native Gemini
+              Live voice is available it provides the audio, so this second voice
+              must not exist at all ("stick to one voice"). It only appears when
+              native voice is not enabled, or has failed over to the browser
+              floor (liveFailed), and never while a live session is active. */}
+          {isSpeechSynthesisSupported &&
+          (!isNativeVoiceEnabled || liveFailed) &&
+          !liveActive ? (
             <button
               type="button"
               onClick={toggleVoiceOutput}
