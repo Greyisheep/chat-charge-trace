@@ -47,7 +47,7 @@ from google.adk.workflow import START, JoinNode, RetryConfig, Workflow, node
 from ..money import money
 from ..shop import catalog, delivery
 from ..shop.orders import order_store
-from ..telemetry import traced
+from ..telemetry import set_span_attribute, span, traced
 from . import gen_ui
 from .flight_agent import create_flight_agent
 
@@ -80,6 +80,7 @@ def _as_request(node_input: Any) -> dict[str, Any]:
 # --- deterministic nodes -----------------------------------------------------
 
 
+@span("checkout.validate_product")
 def _validate_impl(request: dict[str, Any]) -> dict[str, Any]:
     """Validate the checkout request and resolve the product; pure, no ADK ctx.
 
@@ -123,9 +124,12 @@ def validate_product(ctx: Context, node_input: Any) -> dict[str, Any]:
         exceptions=[delivery.GeocodeUnavailableError],
     ),
 )
+@span("checkout.geocode_destination")
 async def geocode_destination(ctx: Context, node_input: Any):
     payload = dict(node_input)
     request = payload["request"]
+    set_span_attribute("city", request.get("destination_city", ""))
+    set_span_attribute("country", request.get("destination_country", ""))
     geo = await asyncio.to_thread(
         delivery.geocode_city,
         str(request["destination_city"]),
@@ -204,16 +208,17 @@ fare_resolver = _agent_fare_resolver
 
 
 @node(name="flight_fare_lookup", timeout=90.0)
+@span("checkout.flight_fare_lookup")
 async def flight_fare_lookup(ctx: Context, node_input: Any) -> dict[str, Any]:
     payload = dict(node_input)
+    set_span_attribute("city", payload["destination_city"])
     fare: dict[str, str] | None = None
-    with traced("checkout.flight_fare_lookup", city=payload["destination_city"]):
-        try:
-            fare = await fare_resolver(
-                ctx, payload["destination_city"], payload["destination_country"]
-            )
-        except Exception as exc:  # a fare miss must never kill checkout
-            log.warning("checkout.flight_fare_lookup.failed error=%s", exc)
+    try:
+        fare = await fare_resolver(
+            ctx, payload["destination_city"], payload["destination_country"]
+        )
+    except Exception as exc:  # a fare miss must never kill checkout
+        log.warning("checkout.flight_fare_lookup.failed error=%s", exc)
     return {"fare": fare}
 
 
@@ -223,6 +228,7 @@ fee_join = JoinNode(name="fee_join")
 # --- merge, order, payment ---------------------------------------------------
 
 
+@span("checkout.compute_fee")
 def _compute_fee_impl(
     payload: dict[str, Any], fare: dict[str, str] | None, express: bool
 ) -> dict[str, Any]:
@@ -264,6 +270,7 @@ def compute_fee(ctx: Context, node_input: Any) -> dict[str, Any]:
     return _compute_fee_impl(dict(node_input), fare=None, express=False)
 
 
+@span("checkout.create_order")
 async def _create_order_impl(payload: dict[str, Any]) -> dict[str, Any]:
     """Persist the order in Postgres. Every number here was derived above."""
     request = payload["request"]
@@ -279,6 +286,7 @@ async def _create_order_impl(payload: dict[str, Any]) -> dict[str, Any]:
         delivery_fee=Decimal(payload["delivery_fee"]),
         amount=Decimal(payload["total"]),
     )
+    set_span_attribute("reference", order.reference)  # computed locally
     payload["order"] = {
         "reference": order.reference,
         "product_id": order.product_id,
@@ -302,6 +310,7 @@ async def create_order_node(ctx: Context, node_input: Any) -> dict[str, Any]:
     return await _create_order_impl(dict(node_input))
 
 
+@span("checkout.payment_event")
 def _build_result_impl(payload: dict[str, Any]) -> dict[str, Any]:
     """Build the terminal tool-result payload; pure, shared by node and direct path."""
     order = payload["order"]
@@ -416,10 +425,14 @@ async def _standalone_fare(city: str, country: str) -> dict[str, str] | None:
 async def run_checkout_direct(node_input: Any) -> dict[str, Any]:
     """Run the checkout pipeline without the ADK graph engine (live path)."""
     request = _as_request(node_input)
-    with traced("checkout.direct"):
+    with traced("checkout.direct", path="direct"):
         payload = _validate_impl(request)
         req = payload["request"]
-        with traced("checkout.geocode", city=str(req.get("destination_city"))):
+        with traced(
+            "checkout.geocode_destination",
+            city=str(req.get("destination_city")),
+            country=str(req.get("destination_country", "")),
+        ):
             geo = await asyncio.to_thread(
                 delivery.geocode_city,
                 str(req["destination_city"]),
@@ -446,8 +459,10 @@ async def run_checkout_direct(node_input: Any) -> dict[str, Any]:
                     payload["destination_city"], payload["destination_country"]
                 )
         payload = _compute_fee_impl(payload, fare, express)
-        with traced("checkout.create_order"):
-            payload = await _create_order_impl(payload)
+        # _create_order_impl and _build_result_impl carry their own
+        # @span("checkout.create_order") / @span("checkout.payment_event"),
+        # so the direct path emits the same span names as the graph path.
+        payload = await _create_order_impl(payload)
         return _build_result_impl(payload)
 
 

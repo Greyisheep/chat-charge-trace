@@ -1,0 +1,17 @@
+# Auto-provisions the Tempo datasource so Grafana is ready to use on first
+# boot — no manual configuration needed.
+
+apiVersion: 1
+
+datasources:
+  - name: Tempo
+    type: tempo
+    uid: tempo
+    access: proxy
+    url: http://tempo:3200
+    isDefault: true
+    editable: false
+    jsonData:
+      httpMethod: GET
+      # TraceQL search is the primary query mode used in the workshop.
+      # Logs and metrics integration are not wired up (traces only).

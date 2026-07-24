@@ -10,3 +10,7 @@ python-dotenv>=1.0.0
 sqlalchemy>=2.0.40
 asyncpg>=0.30.0
 greenlet>=3.2.1
+# OpenTelemetry — agent-level tracing only (no framework auto-instrumentation).
+opentelemetry-api>=1.25.0
+opentelemetry-sdk>=1.25.0
+opentelemetry-exporter-otlp-proto-http>=1.25.0

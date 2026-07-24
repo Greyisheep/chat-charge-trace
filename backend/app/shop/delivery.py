@@ -22,7 +22,7 @@ from decimal import Decimal
 import httpx
 
 from ..money import money
-from ..telemetry import traced
+from ..telemetry import span
 from .catalog import Product
 
 log = logging.getLogger("delivery")
@@ -76,6 +76,7 @@ class DeliveryQuote:
     fee_source: str  # "standard" | "flight_search" | "fallback"
 
 
+@span("delivery.geocode", city="city")
 def geocode_city(city: str, country: str = "", *, raise_errors: bool = False) -> Geo | None:
     """Resolve a city to coordinates via Open-Meteo (no API key needed).
 
@@ -84,20 +85,19 @@ def geocode_city(city: str, country: str = "", *, raise_errors: bool = False) ->
     (browsing-quote path) or raises GeocodeUnavailableError when raise_errors
     is True (checkout graph path, where the node retries it).
     """
-    with traced("delivery.geocode", city=city):
-        try:
-            resp = httpx.get(
-                _GEOCODE_URL,
-                params={"name": city.strip(), "count": 5, "language": "en", "format": "json"},
-                timeout=10.0,
-            )
-            resp.raise_for_status()
-            results = resp.json().get("results") or []
-        except (httpx.HTTPError, ValueError) as exc:
-            log.warning("delivery.geocode.failed city=%s error=%s", city, exc)
-            if raise_errors:
-                raise GeocodeUnavailableError(str(exc)) from exc
-            return None
+    try:
+        resp = httpx.get(
+            _GEOCODE_URL,
+            params={"name": city.strip(), "count": 5, "language": "en", "format": "json"},
+            timeout=10.0,
+        )
+        resp.raise_for_status()
+        results = resp.json().get("results") or []
+    except (httpx.HTTPError, ValueError) as exc:
+        log.warning("delivery.geocode.failed city=%s error=%s", city, exc)
+        if raise_errors:
+            raise GeocodeUnavailableError(str(exc)) from exc
+        return None
     if not results:
         return None
     wanted = country.strip().lower()

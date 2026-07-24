@@ -1,0 +1,36 @@
+# Grafana Tempo — single-node, local storage.
+#
+# Traces are written to the tempo-data Docker volume so they survive
+# container restarts. They are lost on `docker compose down -v`.
+#
+# block_retention controls how long completed blocks are kept on disk.
+# 1h is fine for a workshop session; increase for longer-running demos.
+
+server:
+  http_listen_port: 3200   # query API + /ready health check
+  log_level: warn
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317   # receives from the OTEL Collector
+
+ingester:
+  max_block_duration: 5m   # flush to storage every 5 minutes
+
+compactor:
+  compaction:
+    block_retention: 1h    # drop blocks older than 1 hour
+
+storage:
+  trace:
+    backend: local
+    wal:
+      path: /var/tempo/wal
+    local:
+      path: /var/tempo/blocks
+
+usage_report:
+  reporting_enabled: false   # no phone-home in workshop
