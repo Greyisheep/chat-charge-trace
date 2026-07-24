@@ -16,6 +16,7 @@ from google.adk.agents import LlmAgent
 from google.adk.tools import google_search
 
 from ..config import get_settings
+from .telemetry_hooks import make_usage_recording_callback
 
 FLIGHT_INSTRUCTION = """
 You are a flight fare researcher. Given a destination city, use Google Search
@@ -40,8 +41,11 @@ def create_flight_agent(mode: str | None = None) -> LlmAgent:
     checkout graph, where build_node defaults a standalone LlmAgent to
     single_turn itself.
     """
+    resolved_model = get_settings().google_model_name
     return LlmAgent(
-        model=get_settings().google_model_name,
+        model=resolved_model,
+        # Token/cost metrics for the fare-lookup sub-agent's own LLM calls (#11).
+        after_model_callback=make_usage_recording_callback(resolved_model),
         name="FlightPriceAgent",
         description=(
             "Finds the current approximate one-way economy flight fare from "

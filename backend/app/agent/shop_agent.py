@@ -24,6 +24,7 @@ from ..config import get_settings
 from . import tools
 from .flight_agent import create_flight_agent
 from .instructions import SHOP_STATIC_INSTRUCTION, shop_dynamic_instruction
+from .telemetry_hooks import make_usage_recording_callback
 
 
 def create_shop_agent(model: str | None = None) -> LlmAgent:
@@ -34,8 +35,14 @@ def create_shop_agent(model: str | None = None) -> LlmAgent:
     Gemini Live audio model instead of the text model. The SSE path calls this
     with no argument and keeps google_model_name unchanged.
     """
+    # Resolve the model up front so the token/cost after_model_callback records
+    # against the model actually in use (see #11).
+    resolved_model = model or get_settings().google_model_name
     return LlmAgent(
-        model=model or get_settings().google_model_name,
+        model=resolved_model,
+        # Records input/output/cached-input tokens + derived USD cost per turn;
+        # cached-input is the context-cache-hit proof ADK never emits (see #11).
+        after_model_callback=make_usage_recording_callback(resolved_model),
         name="OjaConnectShopAgent",
         description=(
             "Conversational shop assistant for Oja Connect: browse products, "

@@ -11,9 +11,10 @@ from typing import Any
 
 from google.adk.apps import App
 from google.adk.apps.app import ContextCacheConfig
-from google.adk.plugins import ReflectAndRetryToolPlugin
 from google.adk.plugins.context_filter_plugin import ContextFilterPlugin
 from google.adk.plugins.global_instruction_plugin import GlobalInstructionPlugin
+
+from .telemetry_hooks import TelemetryReflectAndRetryToolPlugin
 
 APP_NAME = "oja_connect_app"
 
@@ -33,7 +34,8 @@ def build_adk_plugins() -> list[Any]:
         ContextFilterPlugin(num_invocations_to_keep=20),
         # A flaky tool call (geocoder timeout, Monnify hiccup) gets reflected
         # on and retried instead of surfacing a raw stack trace to the buyer.
-        ReflectAndRetryToolPlugin(max_retries=2),
+        # Telemetry subclass so each retry emits a span event + counter (#11).
+        TelemetryReflectAndRetryToolPlugin(max_retries=2),
     ]
 
 

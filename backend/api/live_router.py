@@ -38,6 +38,7 @@ import asyncio
 import base64
 import json
 import logging
+import time
 from functools import lru_cache
 from typing import Any
 
@@ -47,12 +48,14 @@ from google.adk.agents.run_config import RunConfig
 from google.adk.artifacts import InMemoryArtifactService
 from google.adk.runners import Runner
 from google.genai import types
+from opentelemetry import trace
 
 from app.agent.adk_app import APP_NAME, build_adk_app
 from app.agent.agui import lift_public_payload
 from app.agent.shop_agent import create_shop_agent
+from app.agent.telemetry_hooks import record_llm_usage
 from app.config import get_settings
-from app.telemetry import traced
+from app.telemetry import increment_counter, record_histogram, traced
 
 log = logging.getLogger("live")
 
@@ -64,6 +67,85 @@ LIVE_USER_ID = "voice"
 # Public state keys mirrored from the SSE transform, in case a tool ever writes
 # them into state_delta rather than returning them in its result dict.
 PUBLIC_STATE_KEYS = ("payment_event", "ui_components")
+
+
+class _VoiceTurnTelemetry:
+    """Per-connection voice-turn telemetry (see #11).
+
+    run_live emits no token spans and the router only had the live.session span,
+    so the voice door was nearly untraced. This opens a per-turn span (start on
+    the first assistant content after a user turn, end on turn_complete), flags
+    barge-in (user speech while the assistant is still talking), and records the
+    same token/cost metrics as the text door with an extra {"door": "voice"}.
+
+    Every method swallows its own errors: a telemetry failure must never drop the
+    audio stream or close the socket. Events are attached to the held turn span
+    object directly rather than via the active-span helpers, so nothing depends
+    on OTel context propagating across the run_live event loop.
+    """
+
+    def __init__(self, model: str) -> None:
+        self._model = model
+        self._tracer = trace.get_tracer("oja-connect")
+        self._span: Any | None = None
+        self._start: float | None = None
+        self._assistant_speaking = False
+
+    def on_assistant_content(self) -> None:
+        """First assistant content after a user turn opens the per-turn span."""
+        try:
+            if self._span is None:
+                self._span = self._tracer.start_span("voice.turn")
+                self._span.set_attribute("door", "voice")
+                self._span.set_attribute("gen_ai.request.model", self._model)
+                self._start = time.monotonic()
+            self._assistant_speaking = True
+        except Exception as exc:  # telemetry must not break the stream (#11)
+            log.debug("voice.turn.open_failed error=%s", exc)
+
+    def on_user_transcript(self) -> None:
+        """User speech mid-assistant-turn is a barge-in (see #11)."""
+        try:
+            if self._assistant_speaking and self._span is not None:
+                self._span.add_event("voice.barge_in")
+                increment_counter("oja.voice.barge_in")
+        except Exception as exc:
+            log.debug("voice.barge_in.failed error=%s", exc)
+
+    def on_usage(self, usage: Any) -> None:
+        """Record live-model token/cost metrics, tagged door=voice (see #11)."""
+        try:
+            record_llm_usage(self._model, usage, door="voice")
+        except Exception as exc:
+            log.debug("voice.usage.failed error=%s", exc)
+
+    def on_turn_complete(self) -> None:
+        """Close the per-turn span and record its wall-clock duration."""
+        try:
+            if self._span is not None:
+                if self._start is not None:
+                    record_histogram(
+                        "oja.voice.turn_seconds",
+                        time.monotonic() - self._start,
+                        {"door": "voice"},
+                    )
+                self._span.end()
+        except Exception as exc:
+            log.debug("voice.turn.close_failed error=%s", exc)
+        finally:
+            self._span = None
+            self._start = None
+            self._assistant_speaking = False
+
+    def close(self) -> None:
+        """End any dangling turn span on disconnect."""
+        try:
+            if self._span is not None:
+                self._span.end()
+        except Exception as exc:
+            log.debug("voice.turn.dangling_close_failed error=%s", exc)
+        finally:
+            self._span = None
 
 
 @lru_cache(maxsize=1)
@@ -171,6 +253,9 @@ async def agents_live(
 
     await _safe_send(websocket, {"type": "ready"})
 
+    # Per-turn voice telemetry, model = the live model (see #11).
+    turn_telemetry = _VoiceTurnTelemetry(get_settings().gemini_live_model)
+
     async def forward_events() -> None:
         """Consume the run_live event stream and fan it out to the client."""
         async for event in runner.run_live(
@@ -179,7 +264,7 @@ async def agents_live(
             live_request_queue=live_request_queue,
             run_config=run_config,
         ):
-            await _forward_event(websocket, event)
+            await _forward_event(websocket, event, turn_telemetry)
 
     async def process_messages() -> None:
         """Pump client frames into the live queue until stop/disconnect."""
@@ -212,6 +297,7 @@ async def agents_live(
         finally:
             for task in pending:
                 task.cancel()
+            turn_telemetry.close()  # end any dangling per-turn span (#11)
             live_request_queue.close()
             await _safe_close(websocket)
 
@@ -273,9 +359,18 @@ async def _handle_client_frame(
     return True
 
 
-async def _forward_event(websocket: WebSocket, event: Any) -> None:
+async def _forward_event(
+    websocket: WebSocket, event: Any, turn: _VoiceTurnTelemetry | None = None
+) -> None:
     """Translate one ADK live Event into zero or more client frames."""
     content = getattr(event, "content", None)
+
+    # Live-model token/cost usage rides on the event (Event extends LlmResponse);
+    # guarded, so a usage-less event is a no-op (see #11).
+    if turn is not None:
+        usage = getattr(event, "usage_metadata", None)
+        if usage is not None:
+            turn.on_usage(usage)
 
     # Output audio: model audio rides as inline_data blobs (24kHz PCM).
     if content is not None and getattr(content, "parts", None):
@@ -287,6 +382,9 @@ async def _forward_event(websocket: WebSocket, event: Any) -> None:
                 and blob.mime_type.startswith("audio/")
                 and blob.data
             ):
+                # First assistant audio after a user turn opens the turn span.
+                if turn is not None:
+                    turn.on_assistant_content()
                 await _safe_send(
                     websocket,
                     {
@@ -295,8 +393,12 @@ async def _forward_event(websocket: WebSocket, event: Any) -> None:
                     },
                 )
 
-    # Transcription of the user's speech and of the model's speech.
-    await _forward_transcript(websocket, getattr(event, "input_transcription", None), "user")
+    # Transcription of the user's speech and of the model's speech. A user
+    # transcript while the assistant is still speaking is a barge-in (see #11).
+    user_transcription = getattr(event, "input_transcription", None)
+    if turn is not None and getattr(user_transcription, "text", None):
+        turn.on_user_transcript()
+    await _forward_transcript(websocket, user_transcription, "user")
     await _forward_transcript(
         websocket, getattr(event, "output_transcription", None), "assistant"
     )
@@ -329,6 +431,8 @@ async def _forward_event(websocket: WebSocket, event: Any) -> None:
         )
 
     if getattr(event, "turn_complete", None):
+        if turn is not None:
+            turn.on_turn_complete()  # close per-turn span + record duration (#11)
         await _safe_send(websocket, {"type": "turn_complete"})
 
 

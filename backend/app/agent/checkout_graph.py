@@ -47,7 +47,13 @@ from google.adk.workflow import START, JoinNode, RetryConfig, Workflow, node
 from ..money import money
 from ..shop import catalog, delivery
 from ..shop.orders import order_store
-from ..telemetry import set_span_attribute, span, traced
+from ..telemetry import (
+    add_span_event,
+    increment_counter,
+    set_span_attribute,
+    span,
+    traced,
+)
 from . import gen_ui
 from .flight_agent import create_flight_agent
 
@@ -226,6 +232,16 @@ async def geocode_destination(ctx: Context, node_input: Any):
         international=geo.country.strip().lower() != "nigeria",
     )
     route = ROUTE_EXPRESS if request.get("express") else ROUTE_STANDARD
+    # Conditional-edge routing rationale + which checkout path ran. There is no
+    # OTel standard for edge/routing telemetry, so these are ours (see #11).
+    set_span_attribute("path", "graph")
+    set_span_attribute("gen_ai.workflow.route", route)
+    set_span_attribute(
+        "route.reason",
+        "buyer chose express air" if route == ROUTE_EXPRESS
+        else "standard road delivery",
+    )
+    set_span_attribute("route.candidates", "standard,express")
     yield Event(output=payload, route=route)
 
 
@@ -270,6 +286,14 @@ def _parse_fare_text(raw: Any) -> dict[str, str] | None:
 
 async def _agent_fare_resolver(ctx: Context, city: str, country: str) -> dict[str, str] | None:
     """Run the google_search flight agent as a dynamic child node of the graph."""
+    # Agent-to-agent handoff: shop -> flight fare search sub-agent (see #11).
+    add_span_event(
+        "agent.handoff",
+        from_agent="shop",
+        to_agent="flight_price_search",
+        reason="express flight fare lookup",
+    )
+    increment_counter("oja.agent.handoff", attributes={"to": "flight_price_search"})
     agent_node = node(create_flight_agent(), name="flight_price_search", timeout=60.0)
     prompt = (
         f"Find the current approximate one-way economy flight fare from "
@@ -538,6 +562,16 @@ async def _standalone_fare(city: str, country: str) -> dict[str, str] | None:
     fixed express multiple); it can never break checkout.
     """
     try:
+        # Agent-to-agent handoff on the direct (voice) path too (see #11).
+        add_span_event(
+            "agent.handoff",
+            from_agent="shop",
+            to_agent="flight_price_search",
+            reason="express flight fare lookup",
+        )
+        increment_counter(
+            "oja.agent.handoff", attributes={"to": "flight_price_search"}
+        )
         from google.adk.runners import Runner
         from google.adk.sessions import InMemorySessionService
         from google.genai import types as gtypes
@@ -604,6 +638,16 @@ async def run_checkout_direct(node_input: Any) -> dict[str, Any]:
             delivery.standard_fee(payload["distance_km"], payload["international"])
         )
         express = bool(req.get("express"))
+        # Same routing rationale the graph node stamps, on the direct span; the
+        # span already carries path="direct" (see #11). No OTel standard exists
+        # for this, so the attributes are ours.
+        route = ROUTE_EXPRESS if express else ROUTE_STANDARD
+        set_span_attribute("gen_ai.workflow.route", route)
+        set_span_attribute(
+            "route.reason",
+            "buyer chose express air" if express else "standard road delivery",
+        )
+        set_span_attribute("route.candidates", "standard,express")
         fare = None
         if express:
             with traced("checkout.flight_fare_lookup", city=payload["destination_city"]):
