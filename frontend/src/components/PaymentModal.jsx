@@ -6,7 +6,7 @@ import { fetchOrder, verifyOrder } from "../lib/api";
 import { paymentEvents } from "../lib/paymentEvents";
 import { paymentStore } from "../lib/paymentStore";
 import { purchasesStore } from "../lib/purchasesStore";
-import { formatNaira } from "../utils/format";
+import { formatMoneyString, formatNaira } from "../utils/format";
 
 const INITIAL_POLL_DELAYS = [0, 2000, 4000, 8000];
 const FOLLOW_UP_POLL_DELAY = 5000;
@@ -45,6 +45,10 @@ export default function PaymentModal() {
   const [status, setStatus] = useState("idle");
   const [statusNote, setStatusNote] = useState(null);
   const [verifiedOrder, setVerifiedOrder] = useState(null);
+  // Order line items (#4). The stream payment_data does not carry them, so we
+  // read them from the order the backend already created before this modal
+  // opened. Multi-item orders list each line above the total.
+  const [lineItems, setLineItems] = useState([]);
 
   const pollTimeoutRef = useRef(null);
   const terminalHandledRef = useRef(false);
@@ -79,11 +83,32 @@ export default function PaymentModal() {
       setStatus("idle");
       setStatusNote(null);
       setVerifiedOrder(null);
+      setLineItems([]);
     }
     if (!open) {
       stopPolling();
     }
   }, [open, stopPolling]);
+
+  // Read the created order's line items when the modal opens, so a multi-item
+  // cart shows every line above the total. Best effort: on any failure the
+  // summary simply falls back to the single description line.
+  useEffect(() => {
+    const reference = open ? paymentData?.reference : null;
+    if (!reference) return undefined;
+    let cancelled = false;
+    fetchOrder(reference)
+      .then((order) => {
+        if (cancelled) return;
+        setLineItems(Array.isArray(order?.line_items) ? order.line_items : []);
+      })
+      .catch(() => {
+        /* keep the single-line fallback */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, paymentData?.reference]);
 
   useEffect(() => () => stopPolling(), [stopPolling]);
 
@@ -226,6 +251,10 @@ export default function PaymentModal() {
   const isBusy = status === "paying" || status === "verifying";
   const isVerified = status === "verified";
   const amountLabel = formatNaira(paymentData.amount, paymentData.currency);
+  // Only itemize when there is genuinely more than one line; a single-item
+  // order keeps today's single-description look.
+  const isMultiLine = lineItems.length > 1;
+  const orderCurrency = paymentData.currency || "NGN";
 
   const payLabel =
     status === "paying"
@@ -281,13 +310,39 @@ export default function PaymentModal() {
           </div>
         ) : (
           <>
-            <div className="my-5 text-center">
+            {isMultiLine ? (
+              <div className="mb-4 mt-5 divide-y divide-line rounded-lg border border-line">
+                {lineItems.map((line, index) => (
+                  <div
+                    key={line?.product_id ?? index}
+                    className="flex items-center justify-between gap-3 px-4 py-2.5 text-sm"
+                  >
+                    <span className="min-w-0 truncate text-ink-body">
+                      {line?.product_name}
+                      <span className="text-ink-muted">
+                        {" "}
+                        x {line?.quantity ?? 1}
+                      </span>
+                    </span>
+                    <span className="flex-shrink-0 font-medium text-ink-body">
+                      {formatMoneyString(line?.line_total, orderCurrency)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+
+            <div className={isMultiLine ? "mb-5 text-center" : "my-5 text-center"}>
               <div className="text-3xl font-bold text-ink-body">
                 {amountLabel}
               </div>
-              <p className="mt-2 text-sm text-ink-muted">
-                {paymentData.description}
-              </p>
+              {isMultiLine ? (
+                <p className="mt-1 text-xs text-ink-muted">Total including delivery</p>
+              ) : (
+                <p className="mt-2 text-sm text-ink-muted">
+                  {paymentData.description}
+                </p>
+              )}
             </div>
 
             <div className="mb-5 rounded-lg border border-line bg-surface p-4 text-sm">
