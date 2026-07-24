@@ -28,14 +28,31 @@ exporters:
       Authorization: "Basic ${env:LANGFUSE_OTEL_AUTH}"
       x-langfuse-ingestion-version: "4"
 
+processors:
+  # Group a conversation's turns in Langfuse's Sessions view. Each agent turn is
+  # its own trace; ADK already stamps gen_ai.conversation.id (our thread id) on
+  # every span, so copying it into langfuse.session.id (the attribute Langfuse
+  # keys sessions on) threads all turns of one conversation together. Langfuse
+  # needs the session id on EVERY span, which this does. user.id is set from the
+  # ADK user id when present (text vs voice door), for per-user filtering.
+  # (see #11 and the langfuse skill's session grouping guidance)
+  transform/langfuse_session:
+    error_mode: ignore
+    trace_statements:
+      - context: span
+        statements:
+          - set(attributes["langfuse.session.id"], attributes["gen_ai.conversation.id"]) where attributes["gen_ai.conversation.id"] != nil
+          - set(attributes["langfuse.user.id"], attributes["gcp.vertex.agent.session_id"]) where attributes["langfuse.user.id"] == nil and attributes["gcp.vertex.agent.session_id"] != nil
+
 service:
   pipelines:
     # A SEPARATE traces pipeline off the same otlp receiver: the collector fans
     # the spans out to both Tempo (base pipeline) and here. This branch keeps
     # CONTENT (no strip_content) so Langfuse shows the full prompt and response,
     # but still runs transform/redact_pii so buyer PII (cards, emails, account
-    # and phone digit runs) never leaves for the cloud in the clear. (see #11)
+    # and phone digit runs) never leaves for the cloud in the clear. It also
+    # stamps langfuse.session.id so turns group into conversations. (see #11)
     traces/langfuse:
       receivers: [otlp]
-      processors: [batch, transform/redact_pii]
+      processors: [batch, transform/redact_pii, transform/langfuse_session]
       exporters: [otlphttp/langfuse]

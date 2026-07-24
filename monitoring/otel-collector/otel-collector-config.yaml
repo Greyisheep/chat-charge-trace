@@ -95,10 +95,17 @@ exporters:
 service:
   extensions: [health_check]
   pipelines:
-    # Tempo gets structure only: batch, then strip bodies, then mask PII.
+    # Tempo gets structure only: batch, then strip the message/tool BODIES.
+    # No PII redaction here on purpose: once strip_content removes the bodies,
+    # the only attributes left are structural (conversation.id, model, tokens,
+    # route, agent name). Those are NOT PII, and blanket digit redaction would
+    # mangle them (e.g. corrupt conversation.id and break per-conversation
+    # grouping in Grafana). Redaction lives ONLY on the Langfuse branch, which
+    # keeps the bodies. Grafana stays the primary surface and answers everything,
+    # including per-conversation traces via gen_ai.conversation.id. (see #11)
     traces:
       receivers: [otlp]
-      processors: [batch, transform/strip_content, transform/redact_pii]
+      processors: [batch, transform/strip_content]
       exporters: [otlp/tempo]
 
     metrics:
