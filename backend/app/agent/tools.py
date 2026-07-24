@@ -31,7 +31,7 @@ from ..money import money
 from ..monnify.client import MonnifyError
 from ..shop import catalog, delivery
 from ..shop.orders import order_store
-from ..telemetry import span
+from ..telemetry import set_span_attribute, span
 from . import gen_ui
 from .checkout_graph import CheckoutError, checkout_workflow, run_checkout_direct
 
@@ -73,20 +73,17 @@ def list_products() -> dict[str, Any]:
         "success": True,
         "products": [_public_product(p) for p in catalog.PRODUCTS],
         "ui_components": [
-            gen_ui.component(
-                "product_list",
-                {
-                    "products": [
-                        {
-                            "productId": p["id"],
-                            "name": p["name"],
-                            "price": str(p["price"]),
-                            "currency": "NGN",
-                            "image": p["image"],
-                        }
-                        for p in catalog.PRODUCTS
-                    ]
-                },
+            gen_ui.product_list(
+                [
+                    {
+                        "productId": p["id"],
+                        "name": p["name"],
+                        "price": str(p["price"]),
+                        "currency": "NGN",
+                        "image": p["image"],
+                    }
+                    for p in catalog.PRODUCTS
+                ]
             )
         ],
     }
@@ -191,35 +188,314 @@ async def quote_delivery(
     }
 
 
+# --- cart (#4): conversational state, not a table ---------------------------
+#
+# The cart lives in ADK session state under "cart" as a list of
+# {"product_id", "quantity"}. It is never persisted until checkout, where it
+# becomes the order's line items. Unit prices always come from the catalog;
+# nothing the model says sets a price. Money is exact Decimal via money().
+
+CART_KEY = "cart"
+MAX_CART_QUANTITY = 20
+
+
+def _read_cart(tool_context: ToolContext | None) -> list[dict[str, Any]]:
+    """Return the current cart (list of {product_id, quantity}) from state."""
+    if tool_context is None:
+        return []
+    try:
+        raw = tool_context.state.get(CART_KEY)
+    except Exception:
+        return []
+    if not isinstance(raw, list):
+        return []
+    cart: list[dict[str, Any]] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        pid = entry.get("product_id")
+        if not pid:
+            continue
+        try:
+            qty = int(entry.get("quantity", 1))
+        except (TypeError, ValueError):
+            qty = 1
+        cart.append({"product_id": str(pid), "quantity": max(1, qty)})
+    return cart
+
+
+def _write_cart(tool_context: ToolContext | None, cart: list[dict[str, Any]]) -> None:
+    if tool_context is None:
+        return
+    try:
+        tool_context.state[CART_KEY] = cart
+    except Exception as exc:
+        log.warning("tools.cart.write_failed error=%s", exc)
+
+
+def _priced_cart(cart: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], Decimal]:
+    """Resolve each cart line to a priced line item; return (line_items, subtotal).
+
+    line_item shape mirrors what is persisted at checkout:
+    {product_id, product_name, unit_price, quantity, line_total} with money as
+    exact strings. Unresolvable lines are dropped defensively (add_to_cart only
+    ever stores resolved ids, so this should not happen).
+    """
+    line_items: list[dict[str, Any]] = []
+    subtotal = money(0)
+    for entry in cart:
+        product = catalog.get_product(entry["product_id"])
+        if product is None:
+            continue
+        quantity = max(1, min(int(entry["quantity"]), MAX_CART_QUANTITY))
+        unit_price = money(product["price"])
+        line_total = money(unit_price * quantity)
+        subtotal += line_total
+        line_items.append(
+            {
+                "product_id": product["id"],
+                "product_name": product["name"],
+                "unit_price": str(unit_price),
+                "quantity": quantity,
+                "line_total": str(line_total),
+            }
+        )
+    return line_items, subtotal
+
+
+def _cart_card_component(cart: list[dict[str, Any]]) -> tuple[dict[str, Any], list[dict[str, Any]], Decimal]:
+    """Build the cart_card ui component for the current cart (no delivery yet)."""
+    line_items, subtotal = _priced_cart(cart)
+    card = gen_ui.cart_card(line_items, goods_subtotal=str(subtotal))
+    return card, line_items, subtotal
+
+
+def _pairing_suggestion(product: catalog.Product) -> dict[str, Any] | None:
+    """A short, deterministic pairing suggestion for a just-added product.
+
+    Returns {reason, products, ui_components} or None when nothing pairs. The
+    agent words this; the data is entirely in-code, so no inventory is invented.
+    """
+    paired = catalog.pairings_for(product["id"])
+    if not paired:
+        return None
+    reason = catalog.pairing_reason(product, paired)
+    return {
+        "reason": reason,
+        "products": [_public_product(p) for p in paired],
+        "ui_components": [
+            gen_ui.product_list(
+                [
+                    {
+                        "productId": p["id"],
+                        "name": p["name"],
+                        "price": str(p["price"]),
+                        "currency": "NGN",
+                        "image": p["image"],
+                    }
+                    for p in paired
+                ],
+                title=f"Goes well with {product['name']}",
+            )
+        ],
+    }
+
+
+@span("tools.add_to_cart", product_id="product_id", quantity="quantity")
+def add_to_cart(
+    product_id: str,
+    quantity: int = 1,
+    tool_context: ToolContext = None,
+) -> dict[str, Any]:
+    """Add a product to the buyer's cart (or increase its quantity).
+
+    Resolves the product loosely by id or name. Quantity is clamped to a whole
+    number between 1 and 20. If the product is already in the cart, the
+    quantities are merged. Returns the updated cart with line totals and
+    subtotal, a cart_card to render, and, when the product has pairings, a
+    short complementary-item suggestion the agent may offer once.
+
+    Args:
+        product_id: The catalog id or name of the product to add.
+        quantity: How many to add (1-20). Defaults to 1.
+    """
+    product = catalog.resolve_product(product_id)
+    if product is None:
+        return {
+            "success": False,
+            "error": "I could not find that item in the shop. Could you tell me "
+            "the product name again?",
+        }
+    try:
+        qty = int(quantity)
+    except (TypeError, ValueError):
+        qty = 1
+    qty = max(1, min(qty, MAX_CART_QUANTITY))
+
+    cart = _read_cart(tool_context)
+    for entry in cart:
+        if entry["product_id"] == product["id"]:
+            entry["quantity"] = min(entry["quantity"] + qty, MAX_CART_QUANTITY)
+            break
+    else:
+        cart.append({"product_id": product["id"], "quantity": qty})
+    _write_cart(tool_context, cart)
+
+    card, line_items, subtotal = _cart_card_component(cart)
+    set_span_attribute("cart_lines", len(line_items))
+    set_span_attribute("subtotal", str(subtotal))
+    result: dict[str, Any] = {
+        "success": True,
+        "added": {"product_id": product["id"], "name": product["name"], "quantity": qty},
+        "cart": line_items,
+        "subtotal": str(subtotal),
+        "currency": "NGN",
+        "ui_components": [card],
+    }
+    suggestion = _pairing_suggestion(product)
+    if suggestion is not None:
+        result["suggestion"] = {
+            "reason": suggestion["reason"],
+            "products": suggestion["products"],
+        }
+        result["ui_components"].extend(suggestion["ui_components"])
+    return result
+
+
+@span("tools.view_cart")
+def view_cart(tool_context: ToolContext = None) -> dict[str, Any]:
+    """Show the buyer's current cart with line totals and the subtotal.
+
+    The subtotal is the goods total only; the one per-order delivery fee is
+    added at checkout once the destination is known.
+    """
+    cart = _read_cart(tool_context)
+    card, line_items, subtotal = _cart_card_component(cart)
+    set_span_attribute("cart_lines", len(line_items))
+    return {
+        "success": True,
+        "cart": line_items,
+        "subtotal": str(subtotal),
+        "currency": "NGN",
+        "empty": not line_items,
+        "ui_components": [card],
+    }
+
+
+@span("tools.remove_from_cart", product_id="product_id")
+def remove_from_cart(product_id: str, tool_context: ToolContext = None) -> dict[str, Any]:
+    """Remove a product line from the cart entirely.
+
+    Args:
+        product_id: The catalog id or name of the product to remove.
+    """
+    product = catalog.resolve_product(product_id)
+    target_id = product["id"] if product is not None else str(product_id)
+    cart = _read_cart(tool_context)
+    new_cart = [e for e in cart if e["product_id"] != target_id]
+    removed = len(new_cart) != len(cart)
+    _write_cart(tool_context, new_cart)
+    card, line_items, subtotal = _cart_card_component(new_cart)
+    return {
+        "success": True,
+        "removed": removed,
+        "cart": line_items,
+        "subtotal": str(subtotal),
+        "currency": "NGN",
+        "empty": not line_items,
+        "ui_components": [card],
+    }
+
+
+@span("tools.clear_cart")
+def clear_cart(tool_context: ToolContext = None) -> dict[str, Any]:
+    """Empty the buyer's cart completely."""
+    _write_cart(tool_context, [])
+    return {"success": True, "cart": [], "subtotal": "0.00", "currency": "NGN", "empty": True}
+
+
+@span("tools.suggest_pairings", product_id="product_id")
+def suggest_pairings(product_id: str, tool_context: ToolContext = None) -> dict[str, Any]:
+    """Suggest complementary items that go well with a product.
+
+    Pairings are deterministic catalog data, never invented: explicit pairs
+    first, then a tag rule (spicy items pair with cooling drinks). Returns the
+    paired products, a short human reason (e.g. "to cool down the pepper"), and
+    a titled product_list to render. Offer at most one or two, and never
+    pushily.
+
+    Args:
+        product_id: The catalog id or name of the product to pair.
+    """
+    product = catalog.resolve_product(product_id)
+    if product is None:
+        return {
+            "success": False,
+            "error": f"No product matching '{product_id}'.",
+        }
+    suggestion = _pairing_suggestion(product)
+    if suggestion is None:
+        return {
+            "success": True,
+            "product_id": product["id"],
+            "products": [],
+            "reason": "",
+            "ui_components": [],
+        }
+    set_span_attribute("paired_count", len(suggestion["products"]))
+    return {
+        "success": True,
+        "product_id": product["id"],
+        "products": suggestion["products"],
+        "reason": suggestion["reason"],
+        "ui_components": suggestion["ui_components"],
+    }
+
+
 @span("tools.checkout", product_id="product_id")
 async def checkout(
-    product_id: str,
-    customer_full_name: str,
-    customer_email: str,
-    destination_city: str,
-    destination_country: str,
+    product_id: str = "",
+    customer_full_name: str = "",
+    customer_email: str = "",
+    destination_city: str = "",
+    destination_country: str = "",
     express: bool = False,
     tool_context: ToolContext = None,
 ) -> dict[str, Any]:
     """Create an order and open payment, after the buyer has confirmed the purchase.
 
-    Only call this once the buyer has explicitly confirmed they want to buy,
-    has said where the order ships to (city and country) and whether they want
-    express, and has provided their full name and email address. The price is
-    recomputed server side inside the checkout workflow (including a live
-    flight fare check for express), so quoted and charged totals can differ
-    slightly; relay what this returns.
+    Checks out the whole CART (every item the buyer added), as ONE order with
+    ONE delivery fee and ONE payment. Only call this once the buyer has
+    confirmed the cart, said where it ships to (city and country) and whether
+    they want express, and given their full name and email. As a convenience,
+    if the cart is empty you may pass a single product_id to buy just that one
+    item. The price is recomputed server side inside the checkout workflow
+    (including a live flight fare check for express), so quoted and charged
+    totals can differ slightly; relay what this returns.
 
     Args:
-        product_id: The catalog id of the product being bought.
+        product_id: Optional. Only used when the cart is empty, to buy one item.
         customer_full_name: The buyer's full name.
         customer_email: The buyer's email address.
         destination_city: The city the order ships to, e.g. "Abuja".
         destination_country: The country of that city, e.g. "Nigeria".
         express: True when the buyer chose the express fly-it option.
     """
+    # The cart is the source of truth. Fall back to the single product_id only
+    # when the cart is empty, so a direct "buy this one thing" still works.
+    cart = _read_cart(tool_context)
+    if cart:
+        items = [dict(entry) for entry in cart]
+    elif product_id:
+        items = [{"product_id": product_id, "quantity": 1}]
+    else:
+        return {
+            "success": False,
+            "error": "Your cart is empty. Add an item first, then I can check "
+            "you out.",
+        }
     node_input = {
-        "product_id": product_id,
+        "items": items,
         "customer_full_name": customer_full_name,
         "customer_email": customer_email,
         "destination_city": destination_city,
@@ -268,6 +544,9 @@ async def checkout(
         return {"success": False, "error": "Checkout returned no result. Please try again."}
 
     order = result.get("order") or {}
+    # The cart has become an order; empty it so the next purchase starts clean.
+    if order.get("reference"):
+        _write_cart(tool_context, [])
     _remember(
         tool_context,
         customer_name=customer_full_name.strip(),
@@ -316,6 +595,7 @@ async def check_order_status(reference: str, tool_context: ToolContext = None) -
         "reference": order.reference,
         "status": order.status,
         "product_name": order.product_name,
+        "line_items": order.line_items or [],
         "amount": str(order.amount),
         "currency": order.currency,
         "customer_full_name": order.customer_full_name,

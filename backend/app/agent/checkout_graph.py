@@ -80,20 +80,57 @@ def _as_request(node_input: Any) -> dict[str, Any]:
 # --- deterministic nodes -----------------------------------------------------
 
 
+MAX_LINE_QUANTITY = 20
+
+
+def _normalize_items(request: dict[str, Any]) -> list[dict[str, Any]]:
+    """Pull the requested cart lines out of a checkout request.
+
+    Accepts the new multi-item shape (request["items"] = [{product_id,
+    quantity}]) and the legacy single-item shape (request["product_id"]) so a
+    direct "buy this one thing" call still works. Returns raw, unresolved lines
+    (validation happens in _validate_impl).
+    """
+    items = request.get("items")
+    if isinstance(items, list) and items:
+        return [dict(it) for it in items if isinstance(it, dict)]
+    pid = request.get("product_id")
+    if pid:
+        return [{"product_id": pid, "quantity": 1}]
+    return []
+
+
+def _clamp_quantity(raw: Any) -> int:
+    """Coerce a requested quantity to a sane positive int (1..MAX_LINE_QUANTITY)."""
+    try:
+        qty = int(raw)
+    except (TypeError, ValueError):
+        qty = 1
+    if qty < 1:
+        qty = 1
+    if qty > MAX_LINE_QUANTITY:
+        qty = MAX_LINE_QUANTITY
+    return qty
+
+
 @span("checkout.validate_product")
 def _validate_impl(request: dict[str, Any]) -> dict[str, Any]:
-    """Validate the checkout request and resolve the product; pure, no ADK ctx.
+    """Validate the checkout request and resolve every line; pure, no ADK ctx.
 
     Shared by the graph node and the direct executor so both doors validate
-    identically. Resolves the product loosely (id or name) so a near-miss like
-    "suya-spice-box" still finds "suya-spice", then normalizes request
-    product_id to the real catalog id for everything downstream.
+    identically. Reads the cart from request["items"] (falling back to a single
+    request["product_id"] line for the legacy path). Resolves each product
+    loosely (id or name) so a near-miss like "suya-spice-box" still finds
+    "suya-spice", merges duplicate lines, and computes each line total and the
+    goods subtotal with exact Decimal money(). Nothing here is a float, and no
+    number ever comes from the model: unit prices come straight from the
+    catalog.
     """
-    product = catalog.resolve_product(str(request.get("product_id", "")))
-    if product is None:
+    raw_lines = _normalize_items(request)
+    if not raw_lines:
         raise CheckoutError(
-            "I could not find that item in the shop. Could you tell me the "
-            "product name again?"
+            "Your cart is empty. Tell me which item (or items) you would like "
+            "to buy first."
         )
     if not str(request.get("customer_full_name", "")).strip():
         raise CheckoutError("The buyer's full name is required first.")
@@ -101,12 +138,55 @@ def _validate_impl(request: dict[str, Any]) -> dict[str, Any]:
         raise CheckoutError("A valid email address is required first.")
     if not str(request.get("destination_city", "")).strip():
         raise CheckoutError("The destination city is required first.")
+
+    # Resolve + merge duplicate product lines, preserving first-seen order.
+    merged: dict[str, int] = {}
+    order_seen: list[str] = []
+    for raw in raw_lines:
+        product = catalog.resolve_product(str(raw.get("product_id", "")))
+        if product is None:
+            raise CheckoutError(
+                "I could not find one of those items in the shop. Could you "
+                "tell me the product name again?"
+            )
+        qty = _clamp_quantity(raw.get("quantity", 1))
+        pid = product["id"]
+        if pid not in merged:
+            merged[pid] = 0
+            order_seen.append(pid)
+        merged[pid] += qty
+
+    line_items: list[dict[str, Any]] = []
+    goods_subtotal = money(0)
+    for pid in order_seen:
+        product = catalog.get_product(pid)
+        quantity = min(merged[pid], MAX_LINE_QUANTITY)
+        unit_price = money(product["price"])
+        line_total = money(unit_price * quantity)
+        goods_subtotal += line_total
+        line_items.append(
+            {
+                "product_id": product["id"],
+                "product_name": product["name"],
+                "unit_price": str(unit_price),
+                "quantity": quantity,
+                "line_total": str(line_total),
+            }
+        )
+
     request = dict(request)
-    request["product_id"] = product["id"]
+    first = catalog.get_product(order_seen[0])
+    request["product_id"] = first["id"]
     return {
         "request": request,
-        "product": dict(product),
-        "price": str(product["price"]),
+        # The first line's product still drives the primary product card and
+        # the mirrored product_id / product_name columns.
+        "product": dict(first),
+        "line_items": line_items,
+        "goods_subtotal": str(goods_subtotal),
+        # Kept so downstream fee math (which reads payload["price"]) stays the
+        # goods subtotal, not a single unit price.
+        "price": str(goods_subtotal),
     }
 
 
@@ -270,15 +350,37 @@ def compute_fee(ctx: Context, node_input: Any) -> dict[str, Any]:
     return _compute_fee_impl(dict(node_input), fare=None, express=False)
 
 
+def _summary_product_name(line_items: list[dict[str, Any]]) -> str:
+    """A short name for the first product plus a "+N more" tail for extra lines.
+
+    The mirrored product_name column keeps single-item reads meaningful; for a
+    multi-line order it reads e.g. "Suya Spice Box +2 more" (2 = the number of
+    OTHER distinct product lines).
+    """
+    first_name = str(line_items[0]["product_name"])
+    extra = len(line_items) - 1
+    if extra <= 0:
+        return first_name
+    return f"{first_name} +{extra} more"
+
+
 @span("checkout.create_order")
 async def _create_order_impl(payload: dict[str, Any]) -> dict[str, Any]:
-    """Persist the order in Postgres. Every number here was derived above."""
+    """Persist the order (with its line items) in Postgres.
+
+    Every number here was derived above by _validate_impl (goods subtotal, line
+    totals) and _compute_fee_impl (delivery fee, total). Nothing came from the
+    model.
+    """
     request = payload["request"]
-    product = catalog.get_product(payload["product"]["id"])
+    line_items = payload["line_items"]
+    first = catalog.get_product(str(line_items[0]["product_id"]))
     order = await order_store.create_order(
-        product,
-        str(request["customer_full_name"]).strip(),
-        str(request["customer_email"]).strip(),
+        product_id=first["id"],
+        product_name=_summary_product_name(line_items),
+        line_items=line_items,
+        customer_full_name=str(request["customer_full_name"]).strip(),
+        customer_email=str(request["customer_email"]).strip(),
         destination_city=payload["destination_city"],
         destination_country=payload["destination_country"],
         express=payload["express"],
@@ -291,7 +393,9 @@ async def _create_order_impl(payload: dict[str, Any]) -> dict[str, Any]:
         "reference": order.reference,
         "product_id": order.product_id,
         "product_name": order.product_name,
+        "line_items": order.line_items,
         "amount": str(order.amount),
+        "goods_subtotal": payload["goods_subtotal"],
         "currency": order.currency,
         "destination_city": order.destination_city,
         "destination_country": order.destination_country,
@@ -310,14 +414,39 @@ async def create_order_node(ctx: Context, node_input: Any) -> dict[str, Any]:
     return await _create_order_impl(dict(node_input))
 
 
+def _items_phrase(line_items: list[dict[str, Any]]) -> str:
+    """Human list of the ordered items, e.g. "Suya Spice Box x2 and Chilled Cola".
+
+    A quantity of 1 is left implicit; quantities above 1 get an "xN" suffix.
+    The last item is joined with "and"; three or more use Oxford commas.
+    """
+    parts: list[str] = []
+    for line in line_items:
+        name = str(line["product_name"])
+        qty = int(line["quantity"])
+        parts.append(f"{name} x{qty}" if qty > 1 else name)
+    if len(parts) == 1:
+        return parts[0]
+    if len(parts) == 2:
+        return f"{parts[0]} and {parts[1]}"
+    return ", ".join(parts[:-1]) + f", and {parts[-1]}"
+
+
 @span("checkout.payment_event")
 def _build_result_impl(payload: dict[str, Any]) -> dict[str, Any]:
-    """Build the terminal tool-result payload; pure, shared by node and direct path."""
+    """Build the terminal tool-result payload; pure, shared by node and direct path.
+
+    The order may carry several line items now. The description reads naturally
+    for one or many ("Suya Spice Box x2 and Chilled Cola to Lagos, standard
+    delivery, arrives 1 day"). The primary product card is still the first
+    line's product; a cart_card summarises the whole order and its money.
+    """
     order = payload["order"]
     product = payload["product"]
+    line_items = order["line_items"]
     mode = "express air" if order["express"] else "standard delivery"
     description = (
-        f"{order['product_name']} to {order['destination_city']}, "
+        f"{_items_phrase(line_items)} to {order['destination_city']}, "
         f"{mode}, arrives {order['eta']}"
     )
     amount = money(order["amount"])
@@ -329,6 +458,39 @@ def _build_result_impl(payload: dict[str, Any]) -> dict[str, Any]:
         "currency": "NGN",
         "image": product["image"],
     }
+
+    # A cart_card summarises the whole order (every line + money breakdown).
+    # For a single-line order we ALSO keep the familiar product_card, so the
+    # common one-item path renders exactly as before and the frontend's
+    # name-matching (purchasesStore) still lights up. Multi-line orders lead
+    # with the cart_card.
+    ui_components: list[dict[str, Any]] = [
+        gen_ui.cart_card(
+            line_items,
+            goods_subtotal=order["goods_subtotal"],
+            delivery_fee=order["delivery_fee"],
+            total=order["amount"],
+            currency="NGN",
+            location_label=payload["location_label"],
+            distance_km=payload["distance_km"],
+            eta=order["eta"],
+            express=order["express"],
+            reference=order["reference"],
+        )
+    ]
+    if len(line_items) == 1:
+        ui_components.append(
+            gen_ui.product_card(
+                product_public,
+                delivery_fee=order["delivery_fee"],
+                total=order["amount"],
+                location_label=payload["location_label"],
+                distance_km=payload["distance_km"],
+                eta=order["eta"],
+                express=order["express"],
+            )
+        )
+
     return {
         "success": True,
         "message": (
@@ -348,17 +510,7 @@ def _build_result_impl(payload: dict[str, Any]) -> dict[str, Any]:
                 "description": description,
             },
         },
-        "ui_components": [
-            gen_ui.product_card(
-                product_public,
-                delivery_fee=order["delivery_fee"],
-                total=order["amount"],
-                location_label=payload["location_label"],
-                distance_km=payload["distance_km"],
-                eta=order["eta"],
-                express=order["express"],
-            )
-        ],
+        "ui_components": ui_components,
     }
 
 

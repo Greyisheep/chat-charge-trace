@@ -25,6 +25,7 @@ def _public_order(order: Order) -> dict[str, Any]:
         "amount": str(order.amount),
         "currency": order.currency,
         "product_name": order.product_name,
+        "line_items": order.line_items or [],
         "customer_email": order.customer_email,
         "destination_city": order.destination_city,
         "destination_country": order.destination_country,

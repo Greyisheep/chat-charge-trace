@@ -23,14 +23,14 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Callable
 
-from sqlalchemy import Boolean, DateTime, Numeric, String, select
+from sqlalchemy import JSON, Boolean, DateTime, Numeric, String, select, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from ..config import get_settings
 from ..money import covers, money
 from ..telemetry import set_span_attribute, span
-from .catalog import Product
 
 STATUS_PENDING = "pending"
 STATUS_VERIFIED = "verified"
@@ -44,12 +44,31 @@ class Base(DeclarativeBase):
     pass
 
 
+# One order line, stored as JSON on the order row. Money values are STRINGS so
+# the exact Decimal survives the JSON round trip (D21: a float never touches a
+# money value, not even in storage).
+LineItem = dict[str, str]
+
+# JSONB on Postgres (the real target); plain JSON everywhere else so the same
+# model still works under sqlite in any future test.
+_LineItemsType = JSONB().with_variant(JSON(), "sqlite")
+
+
 class Order(Base):
     __tablename__ = "orders"
 
     reference: Mapped[str] = mapped_column(String(32), primary_key=True)
+    # product_id / product_name mirror the FIRST line (plus a "+N more" summary
+    # on product_name) so existing single-item reads, the frontend, and the
+    # purchasesStore name matching keep working unchanged.
     product_id: Mapped[str] = mapped_column(String(64))
     product_name: Mapped[str] = mapped_column(String(128))
+    # The full order: [{product_id, product_name, unit_price, quantity, line_total}]
+    # with money values as exact strings. Nullable so a pre-existing row (before
+    # this column) reads back as None rather than failing.
+    line_items: Mapped[list[LineItem] | None] = mapped_column(
+        _LineItemsType, nullable=True, default=None
+    )
     amount: Mapped[Decimal] = mapped_column(Numeric(12, 2))  # exact; never float
     currency: Mapped[str] = mapped_column(String(8), default="NGN")
     customer_full_name: Mapped[str] = mapped_column(String(128))
@@ -92,11 +111,24 @@ class OrderStore:
         return self._session_factory
 
     async def init_models(self) -> None:
-        """Create the orders table if missing (workshop simplicity, no Alembic)."""
+        """Create the orders table if missing (workshop simplicity, no Alembic).
+
+        metadata.create_all only creates a *missing* table; it will NOT add a
+        new column to a table that already exists. `line_items` (#4) is a new
+        column, so after create_all we run an idempotent ADD COLUMN IF NOT
+        EXISTS. This means an existing demo database gains the column without a
+        drop and nobody loses their orders. Postgres supports the IF NOT EXISTS
+        clause natively; the guard is a no-op on a freshly created table.
+        """
         self._sessions()  # ensure the engine exists
         assert self._engine is not None
         async with self._engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            dialect = conn.engine.dialect.name
+            if dialect == "postgresql":
+                await conn.execute(
+                    text("ALTER TABLE orders ADD COLUMN IF NOT EXISTS line_items JSONB")
+                )
 
     async def dispose(self) -> None:
         if self._engine is not None:
@@ -109,10 +141,12 @@ class OrderStore:
     @span("orders.create", amount="amount")
     async def create_order(
         self,
-        product: Product,
+        *,
+        product_id: str,
+        product_name: str,
+        line_items: list[LineItem],
         customer_full_name: str,
         customer_email: str,
-        *,
         destination_city: str,
         destination_country: str,
         express: bool,
@@ -120,14 +154,22 @@ class OrderStore:
         delivery_fee: Decimal,
         amount: Decimal,
     ) -> Order:
-        """Persist a new pending order. `amount` is the exact total charged
-        (product price plus delivery fee), computed server side by the caller."""
+        """Persist a new pending order with its line items.
+
+        `amount` is the exact total charged (goods subtotal plus the one
+        per-order delivery fee), computed server side by the caller.
+        `product_id` / `product_name` mirror the first line (name may carry a
+        "+N more" summary) so single-item reads keep working. `line_items` is
+        the full order, money values already stringified exactly.
+        """
         reference = "ord-" + secrets.token_hex(5)  # 10 hex chars
         set_span_attribute("reference", reference)  # computed locally, not a parameter
+        set_span_attribute("line_count", len(line_items))
         order = Order(
             reference=reference,
-            product_id=product["id"],
-            product_name=product["name"],
+            product_id=product_id,
+            product_name=product_name,
+            line_items=line_items,
             amount=money(amount),
             currency="NGN",
             customer_full_name=customer_full_name,

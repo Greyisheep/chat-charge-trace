@@ -42,3 +42,69 @@ def product_card(
             "express": express,
         },
     )
+
+
+def product_list(
+    products: list[dict[str, Any]],
+    *,
+    title: str | None = None,
+) -> dict[str, Any]:
+    """A compact grid of mini product cards, with an optional heading.
+
+    `title` labels the group, e.g. "Goes well with Suya Spice Box" for a
+    pairing suggestion (#10). It is omitted (None) for a plain catalog listing,
+    so the existing untitled list renders unchanged.
+    """
+    return component("product_list", {"title": title, "products": products})
+
+
+def cart_card(
+    line_items: list[dict[str, Any]],
+    *,
+    goods_subtotal: str,
+    delivery_fee: str | None = None,
+    total: str | None = None,
+    currency: str = "NGN",
+    location_label: str | None = None,
+    distance_km: int | None = None,
+    eta: str | None = None,
+    express: bool = False,
+    reference: str | None = None,
+) -> dict[str, Any]:
+    """An order/cart summary card: every line plus the money breakdown.
+
+    Money values are exact strings (D21). `items` mirrors the persisted
+    line_items shape, with a display-friendly image added per line. Delivery
+    props are populated at checkout; for an in-conversation cart preview
+    (before a destination is known) they may be None.
+    """
+    from ..shop import catalog
+
+    items = []
+    for line in line_items:
+        product = catalog.get_product(str(line.get("product_id", "")))
+        items.append(
+            {
+                "productId": line.get("product_id"),
+                "name": line.get("product_name"),
+                "unitPrice": line.get("unit_price"),
+                "quantity": line.get("quantity"),
+                "lineTotal": line.get("line_total"),
+                "image": product["image"] if product else None,
+            }
+        )
+    return component(
+        "cart_card",
+        {
+            "reference": reference,
+            "items": items,
+            "goodsSubtotal": goods_subtotal,
+            "deliveryFee": delivery_fee,
+            "total": total,
+            "currency": currency,
+            "deliveryLocation": location_label,
+            "distanceKm": distance_km,
+            "eta": eta,
+            "express": express,
+        },
+    )
