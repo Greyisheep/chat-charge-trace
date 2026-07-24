@@ -41,6 +41,25 @@
           "text": "All",
           "value": "$__all"
         }
+      },
+      {
+        "name": "conversation",
+        "type": "textbox",
+        "label": "Conversation id",
+        "query": ".*",
+        "current": {
+          "text": ".*",
+          "value": ".*"
+        },
+        "options": [
+          {
+            "text": ".*",
+            "value": ".*",
+            "selected": true
+          }
+        ],
+        "hide": 0,
+        "description": "Paste a gen_ai.conversation.id (the AG-UI threadId) to see just that conversation's turns. Leave as .* to see all."
       }
     ]
   },
@@ -375,6 +394,35 @@
           "queryType": "traceql",
           "query": "{ span.gen_ai.usage.output_tokens > 1000 || duration > 3s }",
           "limit": 20,
+          "tableType": "traces"
+        }
+      ]
+    },
+    {
+      "id": 101,
+      "type": "table",
+      "title": "8. Conversations: turns grouped by conversation id",
+      "description": "Each row is ONE agent turn (one buyer message). The Conversation-id column is gen_ai.conversation.id (the AG-UI threadId); turns that share it are the same conversation. Paste an id into the Conversation-id dashboard variable to drill into a single conversation, or leave it .* to see every recent conversation. Click a row to open that turn's trace, then follow trace-to-logs into the prompt/response in Loki. This is per-conversation observability entirely in the Grafana stack (Langfuse is only a plus). see #11",
+      "datasource": {
+        "type": "tempo",
+        "uid": "tempo"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 39
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "tempo",
+            "uid": "tempo"
+          },
+          "queryType": "traceql",
+          "query": "{ span.gen_ai.conversation.id =~ \"$conversation\" } | select(span.gen_ai.conversation.id, span.gen_ai.agent.name)",
+          "limit": 50,
           "tableType": "traces"
         }
       ]
