@@ -1,5 +1,7 @@
-# Auto-provisions the Tempo datasource so Grafana is ready to use on first
-# boot — no manual configuration needed.
+# Auto-provisions all three datasources so Grafana is ready on first boot,
+# wired for cross-signal correlation (issue #11):
+#   * Tempo trace  --(trace_id)--> Loki logs   (trace-to-logs)
+#   * Prometheus exemplar --(trace_id)--> Tempo (exemplar deep-link)
 
 apiVersion: 1
 
@@ -13,5 +15,45 @@ datasources:
     editable: false
     jsonData:
       httpMethod: GET
-      # TraceQL search is the primary query mode used in the workshop.
-      # Logs and metrics integration are not wired up (traces only).
+      # Trace-to-logs: from any Tempo span, jump to the Loki logs that share its
+      # trace_id (this is where the full prompt / response content lives).
+      tracesToLogsV2:
+        datasourceUid: loki
+        spanStartTimeShift: "-5m"
+        spanEndTimeShift: "5m"
+        filterByTraceID: true
+        filterBySpanID: false
+        # Loki carries trace_id as structured metadata from the OTLP ingest.
+        customQuery: false
+      # Exemplar clicks in Prometheus panels resolve trace_id against Tempo.
+      tracesToMetrics:
+        datasourceUid: prometheus
+
+  - name: Prometheus
+    type: prometheus
+    uid: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    editable: false
+    jsonData:
+      httpMethod: POST
+      # Exemplars: a sample tagged with trace_id links straight into Tempo.
+      exemplarTraceIdDestinations:
+        - name: trace_id
+          datasourceUid: tempo
+
+  - name: Loki
+    type: loki
+    uid: loki
+    access: proxy
+    url: http://loki:3100
+    editable: false
+    jsonData:
+      # Loki -> Tempo: recognise trace_id in a log line's structured metadata
+      # and offer a jump back to the trace.
+      derivedFields:
+        - name: trace_id
+          matcherType: label
+          matcherRegex: trace_id
+          datasourceUid: tempo
+          url: "$${__value.raw}"

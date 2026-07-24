@@ -1,0 +1,26 @@
+# Prometheus - scrapes the OTEL Collector's Prometheus exporter (issue #11).
+#
+# The collector re-exposes every OTLP metric it receives (ADK's gen_ai.* agentic
+# metrics + our own oja.* instruments) at otel-collector:8889/metrics. Prometheus
+# pulls them here. Grafana then reads Prometheus as a datasource.
+#
+# Exemplars are kept (--enable-feature=exemplar-storage in the compose command)
+# so a trace_id attached to a sample can deep-link a panel into Tempo.
+
+global:
+  scrape_interval: 15s      # matches the backend's 15s metric export interval
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: otel-collector
+    honor_labels: true
+    static_configs:
+      - targets: ["otel-collector:8889"]
+        labels:
+          source: otel-collector
+
+  # The collector's own internal telemetry (pipeline health, e.g.
+  # otelcol_exporter_send_failed_spans). Useful to confirm export is flowing.
+  - job_name: otel-collector-internal
+    static_configs:
+      - targets: ["otel-collector:8888"]

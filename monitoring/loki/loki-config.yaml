@@ -1,0 +1,56 @@
+# Loki - single-binary, local filesystem storage (issue #11).
+#
+# Holds the FULL prompt / response content that the backend emits as OTel log
+# events (EVENT_ONLY). The collector pushes them to Loki's native OTLP endpoint
+# (http://loki:3100/otlp/v1/logs). Content lives HERE, never on Tempo spans.
+#
+# max_line_size_truncate: true is the key #11 setting: a long LLM response is
+# TRUNCATED rather than DROPPED, so a big body never silently vanishes.
+
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9096
+  log_level: warn
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    - from: 2024-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+limits_config:
+  # Truncate over-long lines instead of rejecting them (see #11).
+  max_line_size: 256KB
+  max_line_size_truncate: true
+  # OTLP ingestion carries trace_id / span_id as structured metadata, which is
+  # what powers Tempo -> Loki trace-to-logs correlation.
+  allow_structured_metadata: true
+  reject_old_samples: false
+  volume_enabled: true
+  retention_period: 24h
+
+compactor:
+  working_directory: /loki/compactor
+  retention_enabled: true
+  delete_request_store: filesystem
+
+analytics:
+  reporting_enabled: false

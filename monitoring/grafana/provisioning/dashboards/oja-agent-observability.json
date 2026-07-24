@@ -1,0 +1,216 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "graphTooltip": 1,
+  "time": { "from": "now-1h", "to": "now" },
+  "timezone": "",
+  "title": "Oja Connect: Agent Observability",
+  "uid": "oja-agent-obs",
+  "schemaVersion": 39,
+  "version": 1,
+  "tags": ["oja-connect", "adk", "gen_ai", "issue-11"],
+  "templating": {
+    "list": [
+      {
+        "name": "model",
+        "label": "Model",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "query": { "query": "label_values(gen_ai_request_model)", "refId": "A" },
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": { "text": "All", "value": "$__all" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 100,
+      "type": "text",
+      "title": "How to read this dashboard",
+      "gridPos": { "h": 5, "w": 24, "x": 0, "y": 0 },
+      "options": {
+        "mode": "markdown",
+        "content": "**Source:** ADK computes these `gen_ai.*` metrics natively; the backend `MeterProvider` (issue #11) exports them via the collector to Prometheus. Panels may show **No data** until the in-code instrumentation follow-up runs and real traffic exists. **Metric-name caveat:** the OTLP->Prometheus exporter may append a unit suffix (durations become `..._seconds_*`, token counts may become `..._tokens_*`). If a panel is empty, open the Prometheus metric browser and adjust the suffix. Cache-read tokens are a **span attribute** in ADK, not part of the native token-usage metric, so the cache-ratio and cached-token series depend on the follow-up recording them as a metric (see panel notes)."
+      }
+    },
+
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "1. Context cache hit ratio (cache_read / input)",
+      "description": "Proves context caching is working live. ADK's native token-usage metric only splits input/output; cache_read is a span attribute. The follow-up must record cache_read tokens as a metric (token.type=\"cache_read\" or a dedicated oja.* histogram). Query below assumes token.type=cache_read is emitted.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 5 },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(gen_ai_client_token_usage_sum{gen_ai_token_type=\"cache_read\"}[$__rate_interval])) / clamp_min(sum(rate(gen_ai_client_token_usage_sum{gen_ai_token_type=\"input\"}[$__rate_interval])), 1)",
+          "legendFormat": "cache hit ratio"
+        }
+      ]
+    },
+
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "2. Tokens in / out / cached over time, by model",
+      "description": "gen_ai.client.token.usage split by gen_ai.token.type and gen_ai.request.model. 'cached' depends on the follow-up emitting token.type=cache_read.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 5 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "IN",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (gen_ai_request_model) (rate(gen_ai_client_token_usage_sum{gen_ai_token_type=\"input\", gen_ai_request_model=~\"$model\"}[$__rate_interval]))",
+          "legendFormat": "input - {{gen_ai_request_model}}"
+        },
+        {
+          "refId": "OUT",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (gen_ai_request_model) (rate(gen_ai_client_token_usage_sum{gen_ai_token_type=\"output\", gen_ai_request_model=~\"$model\"}[$__rate_interval]))",
+          "legendFormat": "output - {{gen_ai_request_model}}"
+        },
+        {
+          "refId": "CACHE",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (gen_ai_request_model) (rate(gen_ai_client_token_usage_sum{gen_ai_token_type=\"cache_read\", gen_ai_request_model=~\"$model\"}[$__rate_interval]))",
+          "legendFormat": "cached - {{gen_ai_request_model}}"
+        }
+      ]
+    },
+
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "3. Estimated cost over time (USD, DERIVED)",
+      "description": "OTel semconv has NO cost attribute (see #11); this is our derived number from estimate_cost_usd(). The follow-up records it as the metric oja_llm_cost_usd. Not a billing source of truth.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 13 },
+      "fieldConfig": { "defaults": { "unit": "currencyUSD" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (gen_ai_request_model) (rate(oja_llm_cost_usd_sum{gen_ai_request_model=~\"$model\"}[$__rate_interval]))",
+          "legendFormat": "$/s - {{gen_ai_request_model}}"
+        }
+      ]
+    },
+
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "4a. Estimated cost per turn (USD, DERIVED)",
+      "description": "Mean derived cost per agent turn = rate(oja_llm_cost_usd_sum)/rate(oja_llm_cost_usd_count). Depends on the follow-up.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 13 },
+      "fieldConfig": { "defaults": { "unit": "currencyUSD", "decimals": 5 }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(oja_llm_cost_usd_sum[$__rate_interval])) / clamp_min(sum(rate(oja_llm_cost_usd_count[$__rate_interval])), 1)",
+          "legendFormat": "cost/turn"
+        }
+      ]
+    },
+
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "4b. Inference calls per agent turn (did it re-plan?)",
+      "description": "gen_ai.invoke_agent.inference_calls histogram. Mean = rate(sum)/rate(count). A rising line means the agent is making multiple model calls per turn (re-planning / tool-loop).",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 13 },
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0 }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(gen_ai_invoke_agent_inference_calls_sum[$__rate_interval])) / clamp_min(sum(rate(gen_ai_invoke_agent_inference_calls_count[$__rate_interval])), 1)",
+          "legendFormat": "avg inference calls/turn"
+        },
+        {
+          "refId": "P95",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(gen_ai_invoke_agent_inference_calls_bucket[$__rate_interval])))",
+          "legendFormat": "p95 inference calls/turn"
+        }
+      ]
+    },
+
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "5. Tool calls per turn",
+      "description": "gen_ai.invoke_agent.tool_calls histogram. Mean and p95 tool calls per agent invocation.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 21 },
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0 }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(gen_ai_invoke_agent_tool_calls_sum[$__rate_interval])) / clamp_min(sum(rate(gen_ai_invoke_agent_tool_calls_count[$__rate_interval])), 1)",
+          "legendFormat": "avg tool calls/turn"
+        },
+        {
+          "refId": "P95",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(gen_ai_invoke_agent_tool_calls_bucket[$__rate_interval])))",
+          "legendFormat": "p95 tool calls/turn"
+        }
+      ]
+    },
+
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "6. Tool exec p95 & workflow duration (seconds)",
+      "description": "gen_ai.execute_tool.duration and gen_ai.invoke_workflow.duration histograms. Durations may export with a _seconds suffix; adjust if empty.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 21 },
+      "fieldConfig": { "defaults": { "unit": "s", "min": 0 }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "TOOLP95",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(gen_ai_execute_tool_duration_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "tool exec p95"
+        },
+        {
+          "refId": "WFP95",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(gen_ai_invoke_workflow_duration_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "workflow p95"
+        }
+      ]
+    },
+
+    {
+      "id": 8,
+      "type": "table",
+      "title": "7. Slow or high-token traces (Tempo / TraceQL)",
+      "description": "Structural TraceQL. Click a row to open the trace, then jump to its Loki content via trace-to-logs. Edit the query for your threshold.",
+      "datasource": { "type": "tempo", "uid": "tempo" },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 29 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "tempo", "uid": "tempo" },
+          "queryType": "traceql",
+          "query": "{ span.gen_ai.usage.output_tokens > 1000 || duration > 3s }",
+          "limit": 20,
+          "tableType": "traces"
+        }
+      ]
+    }
+  ]
+}

@@ -15,6 +15,12 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from google.adk.sessions import DatabaseSessionService
 
+# Import telemetry FIRST so the global Tracer/Meter/Logger providers are
+# installed before any agent, tool, or ADK module is imported and starts
+# creating instruments against the global meter (issue #11). Importing it here
+# is idempotent with the `from ..telemetry import span` imports in the agent
+# modules; this line just guarantees the ordering.
+import app.telemetry  # noqa: F401  (side-effect import: installs OTel providers)
 from api import agents_router, live_router, shop_router, webhook_router
 from app.config import get_settings
 from app.shop.orders import order_store

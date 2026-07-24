@@ -10,7 +10,10 @@ python-dotenv>=1.0.0
 sqlalchemy>=2.0.40
 asyncpg>=0.30.0
 greenlet>=3.2.1
-# OpenTelemetry — agent-level tracing only (no framework auto-instrumentation).
-opentelemetry-api>=1.25.0
-opentelemetry-sdk>=1.25.0
-opentelemetry-exporter-otlp-proto-http>=1.25.0
+# OpenTelemetry - agent-level tracing PLUS the #11 metrics + logs pipeline.
+# The proto-http exporter package covers traces, metrics, AND logs over OTLP/HTTP,
+# so no extra exporter package is needed for the MeterProvider / LoggerProvider.
+# Pinned <=1.42.1 to stay inside google-adk 2.5.0's api/sdk constraint.
+opentelemetry-api>=1.25.0,<=1.42.1
+opentelemetry-sdk>=1.25.0,<=1.42.1
+opentelemetry-exporter-otlp-proto-http>=1.25.0,<=1.42.1

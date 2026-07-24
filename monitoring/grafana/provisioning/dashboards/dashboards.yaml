@@ -1,0 +1,14 @@
+# Auto-loads every dashboard JSON in the mounted folder on Grafana boot.
+apiVersion: 1
+
+providers:
+  - name: oja-connect
+    orgId: 1
+    folder: "Oja Connect"
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards
+      foldersFromFilesStructure: false

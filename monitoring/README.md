@@ -1,9 +1,18 @@
-# Oja Connect — Monitoring Stack
+# Oja Connect - Monitoring Stack
 
 Agent traces for the "Chat, Charge, Trace" workshop.
 
 The backend ships OpenTelemetry spans to the OTEL Collector, which forwards
 them to Tempo. Grafana connects to Tempo and lets you explore individual traces.
+
+> **Deep agentic observability (issue #11).** This stack now carries three
+> signals, not just traces: **traces -> Tempo** (bodies stripped, PII masked),
+> **metrics -> Prometheus** (ADK's native `gen_ai.*` agentic metrics), and
+> **logs -> Loki** (full prompt / response content). The provisioned dashboard
+> "Oja Connect: Agent Observability" answers cache-hit ratio, tokens, cost,
+> re-planning, and tool latency. For the why-and-how, read
+> [`../AGENTIC_OBSERVABILITY.md`](../AGENTIC_OBSERVABILITY.md). The span-only
+> notes below still apply to the traces signal.
 
 ## Architecture
 
@@ -32,7 +41,7 @@ cd monitoring
 docker compose up -d
 ```
 
-Open http://localhost:3000 — no login needed.
+Open http://localhost:3000 - no login needed.
 
 Go to **Explore** (compass icon), select the **Tempo** datasource, and
 switch to **Search** or **TraceQL** mode.
@@ -163,7 +172,7 @@ Grafana is then at `http://vm-ip:3000`.
    curl http://localhost:3200/ready   # should print "ready"
    ```
 
-2. Check the backend is sending spans — look for OTEL-related log lines at
+2. Check the backend is sending spans - look for OTEL-related log lines at
    startup. If `OTEL_EXPORTER_OTLP_ENDPOINT` is wrong the backend logs a
    warning but keeps running.
 
@@ -183,5 +192,5 @@ docker compose restart grafana
 
 This can happen for the checkout fan-out nodes (`express_base_quote` and
 `flight_fare_lookup`) when ADK dispatches them as separate async tasks.
-The spans are still there and timestamped correctly — you can follow the
+The spans are still there and timestamped correctly - you can follow the
 story by reading them in order even without a parent link.

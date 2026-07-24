@@ -1,35 +1,111 @@
-# OTEL Collector — receives spans from the backend, forwards to Tempo.
+# OTEL Collector - the fan-out hub for Oja Connect's three signals (issue #11).
 #
-# Pipeline: backend --(OTLP/HTTP)--> collector --(OTLP/gRPC)--> tempo
+#   backend --(OTLP/HTTP :4318)--> collector
+#       traces  --> Tempo        (content STRIPPED + PII masked; structure only)
+#       metrics --> Prometheus   (scraped off the collector's :8889 exporter)
+#       logs    --> Loki         (FULL prompt / response content lives here)
 #
-# The batch processor holds spans briefly before flushing so Tempo receives
-# them in efficient batches rather than one by one.
+# Why this shape:
+#   * ADK computes rich agentic metrics (gen_ai.invoke_agent.*, execute_tool.*,
+#     invoke_workflow.*, client.token.usage) against the GLOBAL meter. With a
+#     MeterProvider installed in the backend (telemetry.py), they arrive here.
+#   * Prompt / response BODIES arrive as OTel log events (the backend runs
+#     OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=EVENT_ONLY), so bodies
+#     go to Loki and NEVER to Tempo, which silently truncates any attribute past
+#     2048 bytes. The transform below deletes any content that still rides a span.
+#   * This is the DEFAULT (light) stack. The Langfuse full-fidelity LLM surface
+#     is opt-in: run with the langfuse profile AND point the collector at
+#     otel-collector-config.langfuse.yaml (see that file's header).
 
 extensions:
   health_check:
-    endpoint: 0.0.0.0:13133   # internal; not published outside the container
+    endpoint: 0.0.0.0:13133   # internal; used by the compose healthcheck
 
 receivers:
   otlp:
     protocols:
       http:
-        endpoint: 0.0.0.0:4318   # backend sends here
+        endpoint: 0.0.0.0:4318   # backend sends traces + metrics + logs here
 
 processors:
   batch:
-    timeout: 1s            # flush at least every second
-    send_batch_size: 1024  # or when 1024 spans have accumulated
+    timeout: 1s
+    send_batch_size: 1024
+
+  # ---- Tempo branch only: strip large CONTENT attributes off spans ---------
+  # These are the body-bearing attributes. Deleting them keeps spans small and
+  # keeps buyer content out of the trace store. Content survives full-fidelity
+  # on the logs pipeline to Loki (and, opt-in, to Langfuse). (see #11)
+  # error_mode: ignore so a missing key is a no-op.
+  transform/strip_content:
+    error_mode: ignore
+    trace_statements:
+      - context: span
+        statements:
+          - delete_key(attributes, "gen_ai.input.messages")
+          - delete_key(attributes, "gen_ai.output.messages")
+          - delete_key(attributes, "gen_ai.system_instructions")
+          # Legacy ADK schema-v1 body attributes (belt and suspenders):
+          - delete_key(attributes, "gcp.vertex.agent.llm_request")
+          - delete_key(attributes, "gcp.vertex.agent.llm_response")
+          - delete_key(attributes, "gcp.vertex.agent.tool_call_args")
+          - delete_key(attributes, "gcp.vertex.agent.tool_response")
+
+  # ---- Tempo branch only: mask obvious Nigerian-payments PII (see #11) -----
+  # replace_all_patterns walks every span attribute VALUE. Patterns are RE2.
+  # OTTL string literals are DOUBLE-quoted and use \\ for a literal backslash,
+  # so the whole statement is wrapped in a SINGLE-quoted YAML scalar to pass the
+  # backslashes through untouched. (OTTL would need $$ for a literal dollar in a
+  # replacement; ours have none.) Ordering: 13-16 digit card runs first, then
+  # email, then 10-12 digit account / phone runs (\b boundaries stop a 16-digit
+  # run from also matching the 10-12 rule). The redactionprocessor is an
+  # alternative; transform is used here because the masking is explicit.
+  transform/redact_pii:
+    error_mode: ignore
+    trace_statements:
+      - context: span
+        statements:
+          - 'replace_all_patterns(attributes, "value", "\\b\\d{13,16}\\b", "[REDACTED_CARD]")'
+          - 'replace_all_patterns(attributes, "value", "[a-zA-Z0-9._%+\\-]+@[a-zA-Z0-9.\\-]+\\.[a-zA-Z]{2,}", "[REDACTED_EMAIL]")'
+          - 'replace_all_patterns(attributes, "value", "\\b\\d{10,12}\\b", "[REDACTED_DIGITS]")'
 
 exporters:
+  # Traces -> Tempo (OTLP/gRPC, internal network).
   otlp/tempo:
-    endpoint: tempo:4317   # Tempo's OTLP/gRPC receiver (internal network)
+    endpoint: tempo:4317
     tls:
-      insecure: true       # no TLS inside the monitoring network
+      insecure: true
+
+  # Metrics -> exposed for Prometheus to scrape. open_metrics enables exemplars
+  # (a trace_id on a sample links Prometheus panels straight to Tempo).
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    enable_open_metrics: true
+    resource_to_telemetry_conversion:
+      enabled: true   # copy resource attrs (service.name) onto the metric labels
+
+  # Logs -> Loki's native OTLP ingestion endpoint. otlphttp appends /v1/logs,
+  # so this resolves to http://loki:3100/otlp/v1/logs.
+  otlphttp/loki:
+    endpoint: http://loki:3100/otlp
+    tls:
+      insecure: true
 
 service:
   extensions: [health_check]
   pipelines:
+    # Tempo gets structure only: batch, then strip bodies, then mask PII.
     traces:
       receivers: [otlp]
-      processors: [batch]
+      processors: [batch, transform/strip_content, transform/redact_pii]
       exporters: [otlp/tempo]
+
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [prometheus]
+
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlphttp/loki]

@@ -1,17 +1,18 @@
-# Oja Connect monitoring stack — OTEL Collector → Tempo → Grafana
+# Oja Connect monitoring stack - deep agentic observability (issue #11).
 #
-# Bring up with:
-#   cd monitoring && docker compose up -d
+#   backend --OTLP--> otel-collector --> Tempo (traces, bodies stripped)
+#                                    --> Prometheus (metrics, scraped @ :8889)
+#                                    --> Loki (logs, full content)
+#                     Grafana reads all three.
+#   Bring up with:
+#     docker compose -f monitoring/docker-compose.yml up -d
 #
-# The backend ships agent spans via OTLP/HTTP to the collector on :4318.
-# The collector forwards them via OTLP/gRPC to Tempo on :4317 (internal).
-# Grafana reads from Tempo and exposes the Explore view on :3000.
-#
-# For a remote VM: rsync this whole folder to the VM and run the same
-# command. Then set OTEL_EXPORTER_OTLP_ENDPOINT=http://<vm-ip>:4318 in
-# the backend .env.
+# Langfuse is used via Langfuse CLOUD, wired through the official Langfuse skill
+# as a separate follow-up (see #11), not self-hosted here. The collector still
+# emits ADK-native OTLP so cache_read tokens are preserved for that path.
 
 services:
+  # ------------------------------------------------------------------ Tempo --
   tempo:
     image: grafana/tempo:2.5.0
     command: ["-config.file=/etc/tempo.yaml"]
@@ -19,9 +20,7 @@ services:
       - ./tempo/tempo.yaml:/etc/tempo.yaml:ro
       - tempo-data:/var/tempo
     ports:
-      - "3200:3200"   # HTTP query — Grafana datasource + /ready health check
-      # 4317 is intentionally not published; only the collector reaches it
-      # inside the monitoring network.
+      - "3200:3200"   # HTTP query - Grafana datasource + /ready health check
     networks:
       - monitoring
     healthcheck:
@@ -31,19 +30,60 @@ services:
       retries: 10
       start_period: 20s
 
+  # ------------------------------------------------------------- Prometheus --
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      # Exemplars carry trace_id -> deep-link a Prometheus panel into Tempo.
+      - "--enable-feature=exemplar-storage"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - monitoring
+
+  # -------------------------------------------------------------------- Loki --
+  loki:
+    image: grafana/loki:3.1.1
+    command: ["-config.file=/etc/loki/loki-config.yaml"]
+    volumes:
+      - ./loki/loki-config.yaml:/etc/loki/loki-config.yaml:ro
+      - loki-data:/loki
+    ports:
+      - "3100:3100"
+    networks:
+      - monitoring
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3100/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  # --------------------------------------------------------- OTEL Collector --
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.101.0
     command: ["--config=/etc/otel-collector-config.yaml"]
     volumes:
       - ./otel-collector/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
     ports:
-      - "4318:4318"   # OTLP/HTTP — backend sends spans here
+      - "4318:4318"   # OTLP/HTTP - backend sends traces + metrics + logs here
+      - "8889:8889"   # Prometheus exporter - scraped by Prometheus
     networks:
       - monitoring
     depends_on:
       tempo:
         condition: service_healthy
+      loki:
+        condition: service_started
+      prometheus:
+        condition: service_started
 
+  # ----------------------------------------------------------------- Grafana --
   grafana:
     image: grafana/grafana:11.1.0
     ports:
@@ -52,7 +92,7 @@ services:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - grafana-data:/var/lib/grafana
     environment:
-      # No login needed for the workshop — anyone who opens :3000 gets Admin.
+      # No login needed for the workshop - anyone who opens :3000 gets Admin.
       - GF_AUTH_ANONYMOUS_ENABLED=true
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
       - GF_AUTH_DISABLE_LOGIN_FORM=true
@@ -70,8 +110,10 @@ services:
       start_period: 10s
 
 volumes:
-  tempo-data:    # trace blocks survive docker compose down (not docker compose down -v)
-  grafana-data:  # dashboard state, preferences
+  tempo-data:                 # trace blocks survive `down` (not `down -v`)
+  prometheus-data:            # metric TSDB
+  loki-data:                  # log chunks + index
+  grafana-data:               # dashboard state, preferences
 
 networks:
   monitoring:
